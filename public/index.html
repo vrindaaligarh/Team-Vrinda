@@ -208,8 +208,8 @@ function stageCard(task, bills, allStages, busy) {
   return `<section class="card stage-panel">
     <h2><span class="code">${task.code}</span>${esc(task.name)}</h2>
     <p class="sub">${task.kind === 'single' ? 'Find the bill and tap the button. It records the current time.' : isFirst ? 'Type the bill number and press Start. Press End when you finish.' : 'Find the bill, press Start when you begin and End when you finish.'}</p>
-    ${isFirst ? `<form class="row newbill" style="margin-bottom:8px"><input name="no" class="grow billno" placeholder="Bill no. e.g. T050810" maxlength="7" autocapitalize="characters" autocomplete="off" required><button class="btn">Start</button></form>`
-      : `<input id="billsearch" class="billsearch" placeholder="Find bill number, e.g. T050810" value="${esc(filters.queue || '')}" autocapitalize="characters" autocomplete="off">`}
+    ${isFirst ? `<form class="row newbill" style="margin-bottom:8px"><input name="no" class="grow billno" placeholder="Bill T050810 or challan CA007536" maxlength="8" autocapitalize="characters" autocomplete="off" required><button class="btn">Start</button></form>`
+      : `<input id="billsearch" class="billsearch" placeholder="Find bill or challan no." value="${esc(filters.queue || '')}" autocapitalize="characters" autocomplete="off">`}
     ${rows || `<p class="empty">${isFirst ? 'No bill in progress.' : 'Nothing waiting right now.'}</p>`}
   </section>`;
 }
@@ -233,10 +233,10 @@ async function viewOther(m) {
   m.querySelectorAll('form.newbill').forEach((f) => f.onsubmit = (e) => {
     e.preventDefault();
     const no = f.no.value.trim().toUpperCase();
-    if (!/^[TR]\d{6}$/.test(no)) return toast('Bill number must be T or R and 6 digits, like T050810', true);
-    act(f.querySelector('button'), () => api('POST', '/api/bills', { bill_no: no }), `Bill ${no} started`);
+    if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Use a bill no. like T050810 or a challan no. like CA007536', true);
+    act(f.querySelector('button'), () => api('POST', '/api/bills', { bill_no: no }), `${/^[A-Z]{2}/.test(no) ? 'Challan' : 'Bill'} ${no} started`);
   });
-  m.querySelectorAll('input.billno').forEach((i) => i.oninput = () => { i.value = i.value.toUpperCase().replace(/[^TR0-9]/g, ''); });
+  m.querySelectorAll('input.billno').forEach((i) => i.oninput = () => { i.value = i.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); });
   const search = $('#billsearch');
   if (search) {
     const filter = () => {

@@ -224,7 +224,8 @@ function startingBill(u) {
   // Starting a bill ends any work task the person had running.
   db.prepare('UPDATE entries SET end_at = ?, end_by = ? WHERE bill_id IS NULL AND start_by = ? AND end_at IS NULL').run(now(), u.id, u.id);
 }
-const BILL_NO = /^[TR]\d{6}$/;
+// Bill: T or R + 6 digits (T050810). Challan: 2 letters + 6 digits (CA007536).
+const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
 const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
@@ -291,7 +292,7 @@ const routes = {
     const first = stages()[0];
     if (!canDo(u, first.code)) fail(403, 'Not allowed');
     const billNo = String((await readBody(req)).bill_no || '').trim().toUpperCase();
-    if (!BILL_NO.test(billNo)) fail(400, 'Bill number must be T or R and 6 digits, like T050810');
+    if (!BILL_NO.test(billNo)) fail(400, 'Use a bill no. like T050810 or a challan no. like CA007536');
     startingBill(u);
     if (db.prepare('SELECT 1 FROM bills WHERE bill_no = ?').get(billNo)) fail(400, `Bill ${billNo} already exists`);
     const t = now();
