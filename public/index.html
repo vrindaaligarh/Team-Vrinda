@@ -188,6 +188,16 @@ async function loadTab() {
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810.
 const padBillNo = (no) => no.replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
 
+// Tasks like L Rack Setting and O Syrup Cases need a count when they end. Returns the number, or null if cancelled.
+function askQty(label) {
+  for (;;) {
+    const v = prompt(`How many ${label}?`, '');
+    if (v === null) return null;
+    if (/^\d+$/.test(v.trim())) return Number(v.trim());
+    alert('Please type a number, like 12');
+  }
+}
+
 // ---------- Work screen: bill steps + work tasks A-U ----------
 function stageCard(task, bills, allStages, busy) {
   const isFirst = task.stage_order === allStages[0].stage_order;
@@ -220,6 +230,8 @@ async function viewOther(m) {
   const [{ rows, busy }, queues] = await Promise.all([api('GET', '/api/work'), state.me.tasks.length || state.me.is_admin ? api('GET', '/api/queue') : []]);
   const allStages = state.tasks.filter((t) => t.stage_order != null);
   const running = rows.find((r) => !r.end_at);
+  // Ending the running task (by starting something else) needs its count first.
+  const prevQty = () => { if (!running || !running.count_label) return {}; const n = askQty(running.count_label); return n === null ? null : { prev_qty: n }; };
   if (state.openStage && !queues.some((q) => q.task.code === state.openStage)) state.openStage = null;
   const open = queues.find((q) => q.task.code === state.openStage);
   const now = busy
@@ -231,13 +243,14 @@ async function viewOther(m) {
     ${queues.length ? `<section class="card"><h2>Bill work</h2><p class="sub">Tap your bill step.</p><div class="task-grid">${billTiles}</div></section>${open ? stageCard(open.task, open.bills, allStages, busy) : ''}` : ''}
     <section class="card"><h2>${queues.length ? 'Other work' : 'What are you doing now?'}</h2><p class="sub">Tap a task to start it. Tapping another task ends the current one.</p>
     ${busy ? `<p class="pill amber" style="margin-bottom:10px">Finish bill ${esc(busy.bill_no)} first</p>` : ''}<div class="task-grid"${busy ? ' style="opacity:.45;pointer-events:none"' : ''}>${tiles}</div></section>
-    <section class="card"><h2>My recent tasks</h2>${rows.length ? `<div class="scroll"><table><tr><th>Task</th><th>Start</th><th>End</th><th>Time</th></tr>
-    ${rows.map((r) => `<tr><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : '<span class="pill amber">Running</span>'}</td><td>${dur(r.start_at, r.end_at)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No tasks yet.</p>'}</section>`;
+    <section class="card"><h2>My recent tasks</h2>${rows.length ? `<div class="scroll"><table><tr><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Count</th></tr>
+    ${rows.map((r) => `<tr><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : '<span class="pill amber">Running</span>'}</td><td>${dur(r.start_at, r.end_at)}</td><td>${countCell(r)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No tasks yet.</p>'}</section>`;
   m.querySelectorAll('form.newbill').forEach((f) => f.onsubmit = (e) => {
     e.preventDefault();
     const no = padBillNo(f.no.value.trim().toUpperCase());
     if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Use a bill no. like T050810 or a challan no. like CA007536', true);
-    act(f.querySelector('button'), () => api('POST', '/api/bills', { bill_no: no }), `${/^[A-Z]{2}/.test(no) ? 'Challan' : 'Bill'} ${no} started`);
+    const extra = prevQty(); if (!extra) return;
+    act(f.querySelector('button'), () => api('POST', '/api/bills', { bill_no: no, ...extra }), `${/^[A-Z]{2}/.test(no) ? 'Challan' : 'Bill'} ${no} started`);
   });
   m.querySelectorAll('input.billno').forEach((i) => i.oninput = () => { i.value = i.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); });
   const search = $('#billsearch');
@@ -254,12 +267,17 @@ async function viewOther(m) {
     const a = e.target.closest('button[data-a]');
     if (a) {
       const label = { start: 'Started', end: 'Ended', done: 'Marked' }[a.dataset.a];
-      return act(a, () => api('POST', '/api/stage', { bill_id: +a.dataset.b, task_code: a.dataset.t, action: a.dataset.a }), label + ' at ' + fmtTime(new Date().toISOString()));
+      const extra = a.dataset.a === 'start' ? prevQty() : {}; if (!extra) return;
+      return act(a, () => api('POST', '/api/stage', { bill_id: +a.dataset.b, task_code: a.dataset.t, action: a.dataset.a, ...extra }), label + ' at ' + fmtTime(new Date().toISOString()));
     }
     const c = e.target.closest('button[data-code]');
-    if (c) return act(c, () => api('POST', '/api/work', { action: 'start', task_code: c.dataset.code }), `Started ${c.dataset.code}`);
+    if (c) { const extra = prevQty(); if (!extra) return; return act(c, () => api('POST', '/api/work', { action: 'start', task_code: c.dataset.code, ...extra }), `Started ${c.dataset.code}`); }
     const d = e.target.closest('button[data-id]');
-    if (d) return act(d, () => api('POST', '/api/work', { action: 'end', id: +d.dataset.id }), 'Ended');
+    if (d) {
+      const qty = running && running.count_label ? askQty(running.count_label) : undefined;
+      if (qty === null) return;
+      return act(d, () => api('POST', '/api/work', { action: 'end', id: +d.dataset.id, qty }), 'Ended');
+    }
   };
 }
 
@@ -296,15 +314,18 @@ async function viewAll(m) {
         const cells = stages.map((s) => {
           const e = b.stages[s.code];
           if (!e) return '<td></td>';
-          if (s.kind === 'single') return `<td>${fmtTime(e.end_at)}<small>${esc(e.end_by_name)}</small></td>`;
+          const tick = e.verified_at ? ' <span class="pill green" title="Verified by ' + esc(e.verified_by_name) + '">✓</span>' : '';
+          if (s.kind === 'single') return `<td>${fmtTime(e.end_at)}${tick}<small>${esc(e.end_by_name)}</small></td>`;
           const by = e.end_by && e.end_by !== e.start_by ? `${esc(e.start_by_name)} / ${esc(e.end_by_name)}` : esc(e.start_by_name);
-          return `<td>${fmtTime(e.start_at)} – ${e.end_at ? fmtTime(e.end_at) : '…'}<small>${e.end_at ? dur(e.start_at, e.end_at) + ' · ' : ''}${by}</small></td>`;
+          return `<td>${fmtTime(e.start_at)} – ${e.end_at ? fmtTime(e.end_at) : '…'}${tick}<small>${e.end_at ? dur(e.start_at, e.end_at) + ' · ' : ''}${by}</small></td>`;
         }).join('');
         const last = b.stages[stages.at(-1).code];
         const status = b.current === 'DONE' ? '<span class="pill green">Ready</span>' : `<span class="pill amber">At ${b.current} ${esc(name(b.current))}</span>`;
         const done = stages.filter((s) => b.stages[s.code]);
         const detail = filters.open === b.id ? `<tr class="detail"><td colspan="${stages.length + 3}">
-          Bill #${esc(b.bill_no)} created ${fmtFull(b.created_at)} by ${esc(b.created_by_name)}. Ask the person to fix a wrong punch:
+          Bill #${esc(b.bill_no)} created ${fmtFull(b.created_at)} by ${esc(b.created_by_name)}. Verify each step that was punched right:
+          <div class="row" style="margin:8px 0 10px">${done.filter((s) => b.stages[s.code].end_at).map((s) => { const e = b.stages[s.code]; return e.verified_at ? `<span class="pill green">${s.code} verified by ${esc(e.verified_by_name)}</span> <a href="#" data-unverify="${e.id}">undo</a>` : `<button class="btn green small" data-verify="${e.id}">Verify ${s.code}</button>`; }).join('') || '<span class="sub">No finished steps yet.</span>'}</div>
+          Or ask the person to fix a wrong punch:
           <div class="row" style="margin-top:8px">${done.map((s) => { const e = b.stages[s.code]; return `<button class="btn ghost small" data-fix="${e.id}" data-who="${esc(e.start_by_name || e.end_by_name)}">Ask ${esc(e.start_by_name || e.end_by_name)} to fix ${s.code}</button>`; }).join('')}</div>
           ${state.me.is_admin ? `<p class="sub" style="margin:10px 0 0">Owner: undo a stage (this also clears the stages after it):</p>
           <div class="row" style="margin-top:6px">${done.map((s) => `<button class="btn ghost small" data-reset="${s.code}" data-b="${b.id}">Undo ${s.code}${s === stages[0] ? ' (delete bill)' : ''}</button>`).join('')}</div>` : ''}</td></tr>` : '';
@@ -318,6 +339,8 @@ async function viewAll(m) {
   m.onclick = (e) => {
     const fx = e.target.closest('button[data-fix]');
     if (fx) return askFix(fx);
+    const v = e.target.closest('button[data-verify]'); if (v) return act(v, () => api('POST', '/api/verify', { id: +v.dataset.verify }), 'Verified');
+    const uv = e.target.closest('a[data-unverify]'); if (uv) { e.preventDefault(); return act(null, () => api('POST', '/api/verify', { id: +uv.dataset.unverify, undo: true }), 'Verification removed'); }
     const r = e.target.closest('button[data-reset]');
     if (r) {
       if (!confirm(`Undo stage ${r.dataset.reset} for this bill?`)) return;
@@ -349,15 +372,25 @@ function downloadCsv(stages, bills) {
 // ---------- Owner: other task log ----------
 async function viewTaskLog(m) {
   const { from, to } = dayRange(filters.day);
-  const rows = await api('GET', '/api/admin/work?' + new URLSearchParams(from ? { from, to } : {}));
-  m.innerHTML = `<div class="card row"><input type="date" id="fd" value="${filters.day}"><button class="btn ghost small" id="fall">All dates</button></div>
-    <div class="card scroll"><table><tr><th>Employee</th><th>Task</th><th>Start</th><th>End</th><th>Time</th><th></th></tr>
-    ${rows.map((r) => `<tr><td>${esc(r.start_by_name)}</td><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : `<span class="pill amber">Running ${ago(r.start_at)}</span>`}</td><td>${dur(r.start_at, r.end_at)}</td><td><button class="btn ghost small" data-fix="${r.id}" data-who="${esc(r.start_by_name)}">Ask to fix</button></td></tr>`).join('') || '<tr><td colspan="6" class="empty">Nothing logged.</td></tr>'}
+  const rows = await api('GET', '/api/admin/work?' + new URLSearchParams({ ...(from ? { from, to } : {}), ...(filters.verify ? { verify: 1 } : {}) }));
+  m.innerHTML = `<div class="card row"><input type="date" id="fd" value="${filters.day}"><button class="btn ghost small" id="fall">All dates</button>
+    <label><input type="checkbox" id="fv" ${filters.verify ? 'checked' : ''}> Only waiting for verification</label></div>
+    <div class="card scroll"><table><tr><th>Employee</th><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Count</th><th>Verify</th><th></th></tr>
+    ${rows.map((r) => `<tr><td>${esc(r.start_by_name)}</td><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : `<span class="pill amber">Running ${ago(r.start_at)}</span>`}</td><td>${dur(r.start_at, r.end_at)}</td><td>${countCell(r)}</td>
+      <td>${!r.end_at ? '' : r.verified_at ? `<span class="pill green">Verified</span><small>${esc(r.verified_by_name)} ${fmtTime(r.verified_at)} <a href="#" data-unverify="${r.id}">undo</a></small>` : `<button class="btn green small" data-verify="${r.id}">Verify</button>`}</td>
+      <td><button class="btn ghost small" data-fix="${r.id}" data-who="${esc(r.start_by_name)}">Ask to fix</button></td></tr>`).join('') || '<tr><td colspan="8" class="empty">Nothing logged.</td></tr>'}
     </table></div>`;
-  m.onclick = (e) => { const fx = e.target.closest('button[data-fix]'); if (fx) askFix(fx); };
+  $('#fv').onchange = (e) => { filters.verify = e.target.checked; loadTab(); };
+  m.onclick = (e) => {
+    const fx = e.target.closest('button[data-fix]'); if (fx) return askFix(fx);
+    const v = e.target.closest('button[data-verify]'); if (v) return act(v, () => api('POST', '/api/verify', { id: +v.dataset.verify }), 'Verified');
+    const uv = e.target.closest('a[data-unverify]'); if (uv) { e.preventDefault(); return act(null, () => api('POST', '/api/verify', { id: +uv.dataset.unverify, undo: true }), 'Verification removed'); }
+  };
   $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
   $('#fall').onclick = () => { filters.day = ''; loadTab(); };
 }
+
+const countCell = (r) => r.count_label ? (r.qty != null ? `<b>${r.qty}</b> ${esc(r.count_label)}` : '') : '';
 
 // ---------- Fix requests ----------
 function askFix(btn) {

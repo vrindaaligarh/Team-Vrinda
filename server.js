@@ -194,6 +194,15 @@ migrate('2026-10-24-add-admin-ajanta', () => {
       .run('9f6672ea70906e7c44ed25adbcb85981:b0c3ef5d65b1cff8bbcc6e45133d55bf70055d9ee53c3ae8e60fb6ccaaa3115927addeb9e0208b4dcea8db16761aa0176bc96c3899287c319bf9fe53c263a6f4');
   }
 });
+// Some work tasks record a count when they end (L racks, O syrup cases); managers verify those.
+migrate('2026-10-24-task-counts-and-verify', () => {
+  db.exec(`ALTER TABLE tasks ADD COLUMN count_label TEXT;
+    ALTER TABLE entries ADD COLUMN qty INTEGER;
+    ALTER TABLE entries ADD COLUMN verified_by INTEGER REFERENCES users(id);
+    ALTER TABLE entries ADD COLUMN verified_at TEXT;`);
+  db.prepare("UPDATE tasks SET count_label = 'racks' WHERE code = 'L'").run();
+  db.prepare("UPDATE tasks SET count_label = 'syrup cases' WHERE code = 'O'").run();
+});
 migrate('2026-10-24-work-code-u-supply', () => {
   db.prepare(`INSERT INTO tasks (code, name, kind) VALUES ('U', 'Supply', 'startend') ON CONFLICT(code) DO UPDATE SET name = excluded.name`).run();
 });
@@ -230,11 +239,24 @@ function currentUser(req) {
 const busyBill = (u) => db.prepare(`SELECT b.id AS bill_id, b.bill_no, e.task_code, e.start_at, t.name AS task_name FROM entries e
   JOIN bills b ON b.id = e.bill_id JOIN tasks t ON t.code = e.task_code
   WHERE e.start_by = ? AND e.start_at IS NOT NULL AND e.end_at IS NULL LIMIT 1`).get(u.id) || null;
-function startingBill(u) {
+// Ends the person's running work task. Tasks with a count (racks, syrup cases) need it first.
+function endOpenWork(u, qty, id) {
+  const e = db.prepare(`SELECT e.id, t.count_label FROM entries e JOIN tasks t ON t.code = e.task_code
+    WHERE e.bill_id IS NULL AND e.start_by = ? AND e.end_at IS NULL ${id ? 'AND e.id = ?' : ''}`).get(...(id ? [u.id, id] : [u.id]));
+  if (!e) return false;
+  let n = null;
+  if (e.count_label) {
+    n = Number(qty);
+    if (qty === undefined || qty === null || qty === '' || !Number.isInteger(n) || n < 0) fail(400, `Enter how many ${e.count_label}`);
+  }
+  db.prepare('UPDATE entries SET end_at = ?, end_by = ?, qty = ? WHERE id = ?').run(now(), u.id, n, e.id);
+  return true;
+}
+function startingBill(u, prevQty) {
   const busy = busyBill(u);
   if (busy) fail(400, `Finish bill ${busy.bill_no} first`);
   // Starting a bill ends any work task the person had running.
-  db.prepare('UPDATE entries SET end_at = ?, end_by = ? WHERE bill_id IS NULL AND start_by = ? AND end_at IS NULL').run(now(), u.id, u.id);
+  endOpenWork(u, prevQty);
 }
 // Bill: T or R + 6 digits (T050810). Challan: 2 letters + 6 digits (CA007536).
 const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
@@ -248,8 +270,8 @@ function billRows(where = '', params = []) {
   if (!bills.length) return [];
   const ids = bills.map((b) => b.id);
   const entries = db.prepare(`
-    SELECT e.*, su.name AS start_by_name, eu.name AS end_by_name FROM entries e
-    LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users eu ON eu.id = e.end_by
+    SELECT e.*, su.name AS start_by_name, eu.name AS end_by_name, vu.name AS verified_by_name FROM entries e
+    LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users eu ON eu.id = e.end_by LEFT JOIN users vu ON vu.id = e.verified_by
     WHERE e.bill_id IN (${ids.map(() => '?').join(',')})`).all(...ids);
   const byBill = {};
   for (const e of entries) (byBill[e.bill_id] ||= {})[e.task_code] = e;
@@ -305,10 +327,11 @@ const routes = {
   'POST /api/bills': async (req, res, u) => {
     const first = stages()[0];
     if (!canDo(u, first.code)) fail(403, 'Not allowed');
-    const billNo = padBillNo(String((await readBody(req)).bill_no || '').trim().toUpperCase());
+    const body = await readBody(req);
+    const billNo = padBillNo(String(body.bill_no || '').trim().toUpperCase());
     if (!BILL_NO.test(billNo)) fail(400, 'Use a bill no. like T050810 or a challan no. like CA007536');
-    startingBill(u);
     if (db.prepare('SELECT 1 FROM bills WHERE bill_no = ?').get(billNo)) fail(400, `Bill ${billNo} already exists`);
+    startingBill(u, body.prev_qty);
     const t = now();
     const { lastInsertRowid } = db.prepare('INSERT INTO bills (bill_no, created_at, created_by) VALUES (?, ?, ?)').run(billNo, t, u.id);
     db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by) VALUES (?, ?, ?, ?)').run(lastInsertRowid, first.code, t, u.id);
@@ -316,7 +339,7 @@ const routes = {
   },
   // Press a button on a bill: action = start | end | done (single timestamp).
   'POST /api/stage': async (req, res, u) => {
-    const { bill_id, task_code, action } = await readBody(req);
+    const { bill_id, task_code, action, prev_qty } = await readBody(req);
     const task = db.prepare('SELECT * FROM tasks WHERE code = ? AND stage_order IS NOT NULL').get(task_code);
     if (!task) fail(400, 'Unknown stage');
     if (!canDo(u, task.code)) fail(403, 'This stage is not in your login');
@@ -328,7 +351,7 @@ const routes = {
     if (action === 'start') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
       if (e && e.start_at) fail(400, `Already started by ${e.start_by_name}`);
-      startingBill(u);
+      startingBill(u, prev_qty);
       db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by) VALUES (?, ?, ?, ?)').run(bill.id, task.code, t, u.id);
     } else if (action === 'end') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
@@ -343,24 +366,31 @@ const routes = {
 
   // General (non-bill) work, e.g. "C Basement Cleaning": start/end with optional note.
   'GET /api/work': async (req, res, u) => {
-    const rows = db.prepare(`SELECT e.*, t.name AS task_name FROM entries e JOIN tasks t ON t.code = e.task_code
+    const rows = db.prepare(`SELECT e.*, t.name AS task_name, t.count_label FROM entries e JOIN tasks t ON t.code = e.task_code
       WHERE e.bill_id IS NULL AND e.start_by = ? ORDER BY e.id DESC LIMIT 30`).all(u.id);
     send(res, 200, { rows, busy: busyBill(u) });
   },
   'POST /api/work': async (req, res, u) => {
-    const { action, task_code, id, note } = await readBody(req);
+    const { action, task_code, id, note, qty, prev_qty } = await readBody(req);
     if (action === 'start') {
       if (!db.prepare('SELECT 1 FROM tasks WHERE code = ? AND stage_order IS NULL').get(task_code)) fail(400, 'Unknown task');
       const busy = busyBill(u);
       if (busy) fail(400, `Finish bill ${busy.bill_no} first`);
-      const t = now();
       // Starting a new task ends whatever this person was doing before.
-      db.prepare('UPDATE entries SET end_at = ?, end_by = ? WHERE bill_id IS NULL AND start_by = ? AND end_at IS NULL').run(t, u.id, u.id);
-      db.prepare('INSERT INTO entries (task_code, start_at, start_by, note) VALUES (?, ?, ?, ?)').run(task_code, t, u.id, String(note || ''));
+      endOpenWork(u, prev_qty);
+      db.prepare('INSERT INTO entries (task_code, start_at, start_by, note) VALUES (?, ?, ?, ?)').run(task_code, now(), u.id, String(note || ''));
     } else if (action === 'end') {
-      const r = db.prepare('UPDATE entries SET end_at = ?, end_by = ? WHERE id = ? AND bill_id IS NULL AND start_by = ? AND end_at IS NULL').run(now(), u.id, id, u.id);
-      if (!r.changes) fail(400, 'Nothing to end');
+      if (!endOpenWork(u, qty, id)) fail(400, 'Nothing to end');
     } else fail(400, 'Unknown action');
+    send(res, 200, { ok: true });
+  },
+
+  // Manager/owner confirms a finished job (work task or bill step) was punched correctly. undo: true clears it.
+  'POST /api/verify': async (req, res, u) => {
+    if (!canReview(u)) fail(403, 'Managers only');
+    const { id, undo } = await readBody(req);
+    const r = db.prepare('UPDATE entries SET verified_by = ?, verified_at = ? WHERE id = ? AND end_at IS NOT NULL').run(undo ? null : u.id, undo ? null : now(), id);
+    if (!r.changes) fail(400, 'Nothing to verify');
     send(res, 200, { ok: true });
   },
 
@@ -406,8 +436,9 @@ const routes = {
     const where = ['e.bill_id IS NULL']; const params = [];
     if (q.get('from')) { where.push('e.start_at >= ?'); params.push(q.get('from')); }
     if (q.get('to')) { where.push('e.start_at < ?'); params.push(q.get('to')); }
-    send(res, 200, db.prepare(`SELECT e.*, t.name AS task_name, su.name AS start_by_name FROM entries e
-      JOIN tasks t ON t.code = e.task_code LEFT JOIN users su ON su.id = e.start_by
+    if (q.get('verify')) where.push('e.end_at IS NOT NULL AND e.verified_at IS NULL');
+    send(res, 200, db.prepare(`SELECT e.*, t.name AS task_name, t.count_label, su.name AS start_by_name, vu.name AS verified_by_name FROM entries e
+      JOIN tasks t ON t.code = e.task_code LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users vu ON vu.id = e.verified_by
       WHERE ${where.join(' AND ')} ORDER BY e.id DESC LIMIT 500`).all(...params));
   },
   // Undo a stage on a bill (for mistakes). Also clears every later stage.

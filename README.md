@@ -52,6 +52,10 @@ Manager: **ARUN** can see All Bills and Task Log, and tap "Ask to fix" on any pu
 request in red when they open the app and taps "I have fixed it". Requests are listed under **Fix Requests**.
 The owner can make anyone a manager under **Staff**.
 
+Counts and verification: when someone finishes L Rack Setting or O Syrup Cases they type how many racks /
+syrup cases. Managers and owners can **Verify** every finished job: work tasks in **Task Log** (tick
+"Only waiting for verification" to see what's left) and each bill step by tapping a bill in **All Bills**.
+
 The owner can add staff, reset passwords, and change who does which stage under **Staff**,
 and add new short codes under **Task Codes**. Mistakes can be fixed in **All Bills**: click a
 bill row, then "Undo" a stage.
