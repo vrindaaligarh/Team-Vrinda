@@ -2,8 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Bill Tracker</title>
+<meta name="theme-color" content="#1f6feb">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Bill Tracker">
 <style>
   :root {
     --bg: #f4f5f7; --card: #fff; --text: #1d2330; --muted: #6b7280; --line: #e3e6ea;
@@ -64,6 +71,15 @@
   tr.click { cursor: pointer; }
   tr.click:hover td { background: var(--bg); }
   .detail td { background: var(--bg); white-space: normal; }
+  input, select { font-size: 16px; } /* stops phones zooming in on tap */
+  header { padding-top: max(10px, env(safe-area-inset-top)); }
+  @media (max-width: 520px) {
+    header .sub { order: 3; width: 100%; margin: 0; }
+    header button.btn.small { padding: 5px 8px; }
+    main { padding: 10px 12px 40px; } nav { padding: 8px 12px 0; }
+    .card { padding: 14px; }
+    .bill button.btn { flex: 1 1 100%; padding: 12px; font-size: 16px; }
+  }
   .task-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
   .task-tile { display: flex; align-items: center; gap: 8px; text-align: left; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; min-height: 52px; }
   .task-tile.on { border-color: var(--green); background: var(--green-bg); }
@@ -112,9 +128,10 @@ function renderLogin() {
   $('#app').innerHTML = `
     <div class="card login">
       <h2>Shop Bill Tracker</h2><p class="sub">Log in with your ID</p>
-      <form id="lf"><input name="u" placeholder="Username" autocapitalize="off" autofocus>
-      <input name="p" type="password" placeholder="Password"><button class="btn">Log in</button></form>
+      <form id="lf"><input name="u" placeholder="Username" autocapitalize="off" autocomplete="username" value="${esc(new URLSearchParams(location.search).get('u') || '')}">
+      <input name="p" type="password" placeholder="Password" autocomplete="current-password"><button class="btn">Log in</button></form>
     </div>`;
+  { const f = $('#lf'); (f.u.value ? f.p : f.u).focus(); }
   $('#lf').onsubmit = async (e) => {
     e.preventDefault();
     try { await api('POST', '/api/login', { username: e.target.u.value, password: e.target.p.value }); await boot(); }

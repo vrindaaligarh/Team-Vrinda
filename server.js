@@ -392,6 +392,12 @@ const server = http.createServer(async (req, res) => {
       }
       return await handler(req, res, u, url.searchParams);
     }
+    const types = { '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
+    const file = path.join(__dirname, 'public', path.normalize(url.pathname).replace(/^([/\\])+/, ''));
+    const ext = path.extname(file);
+    if (types[ext] && file.startsWith(path.join(__dirname, 'public')) && fs.existsSync(file)) {
+      return send(res, 200, fs.readFileSync(file), { 'Content-Type': types[ext], 'Cache-Control': 'public, max-age=86400' });
+    }
     const html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'));
     send(res, 200, html, { 'Content-Type': 'text/html; charset=utf-8' });
   } catch (err) {
