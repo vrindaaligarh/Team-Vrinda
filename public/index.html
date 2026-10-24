@@ -185,6 +185,9 @@ async function loadTab() {
   catch (e) { toast(e.message, true); }
 }
 
+// Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810.
+const padBillNo = (no) => no.replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
+
 // ---------- Work screen: bill steps + work tasks A-U ----------
 function stageCard(task, bills, allStages, busy) {
   const isFirst = task.stage_order === allStages[0].stage_order;
@@ -232,7 +235,7 @@ async function viewOther(m) {
     ${rows.map((r) => `<tr><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : '<span class="pill amber">Running</span>'}</td><td>${dur(r.start_at, r.end_at)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No tasks yet.</p>'}</section>`;
   m.querySelectorAll('form.newbill').forEach((f) => f.onsubmit = (e) => {
     e.preventDefault();
-    const no = f.no.value.trim().toUpperCase();
+    const no = padBillNo(f.no.value.trim().toUpperCase());
     if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Use a bill no. like T050810 or a challan no. like CA007536', true);
     act(f.querySelector('button'), () => api('POST', '/api/bills', { bill_no: no }), `${/^[A-Z]{2}/.test(no) ? 'Challan' : 'Bill'} ${no} started`);
   });
@@ -241,7 +244,7 @@ async function viewOther(m) {
   if (search) {
     const filter = () => {
       const q = search.value.trim().toUpperCase(); filters.queue = q;
-      m.querySelectorAll('.stage-panel .bill').forEach((el) => { el.hidden = q && !el.dataset.no.includes(q); });
+      m.querySelectorAll('.stage-panel .bill').forEach((el) => { el.hidden = q && !el.dataset.no.includes(q) && el.dataset.no !== padBillNo(q); });
     };
     search.oninput = filter; filter();
   }
