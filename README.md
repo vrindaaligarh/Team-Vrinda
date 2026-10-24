@@ -48,6 +48,10 @@ I Polythene Packing, J Purchased Goods Setting, K Rack Checking, L Rack Setting,
 N Sorting Short Items, O Syrup Cases, P Transport Check, Q Tube Rack Setting, R Sitting Idle,
 S Ground Floor Cleaning, T Break, U Supply. The owner sees them all under **Task Log**.
 
+Manager: **ARUN** can see All Bills and Task Log, and tap "Ask to fix" on any punch. The employee sees the
+request in red when they open the app and taps "I have fixed it". Requests are listed under **Fix Requests**.
+The owner can make anyone a manager under **Staff**.
+
 The owner can add staff, reset passwords, and change who does which stage under **Staff**,
 and add new short codes under **Task Codes**. Mistakes can be fixed in **All Bills**: click a
 bill row, then "Undo" a stage.

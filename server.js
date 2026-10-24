@@ -157,6 +157,20 @@ migrate('2026-10-24-work-codes-a-t', () => {
       ON CONFLICT(code) DO UPDATE SET name = excluded.name`).run(code, name);
   }
 });
+// Managers review everyone's punches and can ask a person to fix one.
+migrate('2026-10-24-managers-and-fix-requests', () => {
+  db.exec(`ALTER TABLE users ADD COLUMN is_manager INTEGER NOT NULL DEFAULT 0;
+  CREATE TABLE fix_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id INTEGER REFERENCES entries(id) ON DELETE SET NULL,
+    what TEXT NOT NULL,                       -- e.g. "Bill T050810 · CH Checking Sale Items"
+    employee_id INTEGER NOT NULL REFERENCES users(id),
+    message TEXT NOT NULL,
+    created_by INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL,
+    reply TEXT, resolved_by INTEGER REFERENCES users(id), resolved_at TEXT
+  );`);
+  db.prepare("UPDATE users SET is_manager = 1 WHERE username = 'arun'").run();
+});
 migrate('2026-10-24-work-code-u-supply', () => {
   db.prepare(`INSERT INTO tasks (code, name, kind) VALUES ('U', 'Supply', 'startend') ON CONFLICT(code) DO UPDATE SET name = excluded.name`).run();
 });
@@ -166,6 +180,7 @@ const now = () => new Date().toISOString();
 const stages = () => db.prepare('SELECT * FROM tasks WHERE stage_order IS NOT NULL ORDER BY stage_order').all();
 const userTasks = (u) => u.tasks.split(',').map((s) => s.trim()).filter(Boolean);
 const canDo = (u, code) => u.is_admin || userTasks(u).includes(code);
+const canReview = (u) => !!(u.is_admin || u.is_manager);
 
 function send(res, status, body, headers = {}) {
   const isJson = typeof body !== 'string' && !Buffer.isBuffer(body);
@@ -198,7 +213,7 @@ function startingBill(u) {
   db.prepare('UPDATE entries SET end_at = ?, end_by = ? WHERE bill_id IS NULL AND start_by = ? AND end_at IS NULL').run(now(), u.id, u.id);
 }
 const BILL_NO = /^[TR]\d{6}$/;
-const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, tasks: userTasks(u), active: !!u.active });
+const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
 function billRows(where = '', params = []) {
@@ -322,6 +337,36 @@ const routes = {
     send(res, 200, { ok: true });
   },
 
+  // ---------- fix requests (manager asks a person to correct a punch) ----------
+  'GET /api/fixes': async (req, res, u) => {
+    const sql = `SELECT f.*, eu.name AS employee_name, cu.name AS created_by_name, ru.name AS resolved_by_name FROM fix_requests f
+      JOIN users eu ON eu.id = f.employee_id JOIN users cu ON cu.id = f.created_by LEFT JOIN users ru ON ru.id = f.resolved_by`;
+    const rows = canReview(u)
+      ? db.prepare(`${sql} ORDER BY f.resolved_at IS NOT NULL, f.id DESC LIMIT 200`).all()
+      : db.prepare(`${sql} WHERE f.employee_id = ? AND (f.resolved_at IS NULL OR f.resolved_at > datetime('now', '-2 days')) ORDER BY f.id DESC`).all(u.id);
+    send(res, 200, rows);
+  },
+  'POST /api/fixes': async (req, res, u) => {
+    if (!canReview(u)) fail(403, 'Managers only');
+    const { entry_id, message } = await readBody(req);
+    if (!String(message || '').trim()) fail(400, 'Write what needs fixing');
+    const e = db.prepare(`SELECT e.*, t.name AS task_name, b.bill_no FROM entries e JOIN tasks t ON t.code = e.task_code
+      LEFT JOIN bills b ON b.id = e.bill_id WHERE e.id = ?`).get(entry_id);
+    if (!e) fail(404, 'Entry not found');
+    const what = (e.bill_no ? `Bill ${e.bill_no} · ` : '') + `${e.task_code} ${e.task_name}`;
+    db.prepare('INSERT INTO fix_requests (entry_id, what, employee_id, message, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(e.id, what, e.start_by || e.end_by, String(message).trim(), u.id, now());
+    send(res, 200, { ok: true });
+  },
+  'POST /api/fixes/done': async (req, res, u) => {
+    const { id, reply } = await readBody(req);
+    const f = db.prepare('SELECT * FROM fix_requests WHERE id = ? AND resolved_at IS NULL').get(id);
+    if (!f) fail(404, 'Request not found');
+    if (f.employee_id !== u.id && !canReview(u)) fail(403, 'Not your request');
+    db.prepare('UPDATE fix_requests SET reply = ?, resolved_by = ?, resolved_at = ? WHERE id = ?').run(String(reply || '').trim() || null, u.id, now(), id);
+    send(res, 200, { ok: true });
+  },
+
   // ---------- owner / admin ----------
   'GET /api/admin/bills': async (req, res, u, q) => {
     const where = []; const params = [];
@@ -356,7 +401,7 @@ const routes = {
     const tasks = (b.tasks || []).join(',');
     if (b.id) {
       if (b.id === u.id && !b.is_admin) fail(400, 'You cannot remove your own owner access');
-      db.prepare('UPDATE users SET name = ?, tasks = ?, is_admin = ?, active = ? WHERE id = ?').run(b.name, tasks, b.is_admin ? 1 : 0, b.active ? 1 : 0, b.id);
+      db.prepare('UPDATE users SET name = ?, tasks = ?, is_admin = ?, is_manager = ?, active = ? WHERE id = ?').run(b.name, tasks, b.is_admin ? 1 : 0, b.is_manager ? 1 : 0, b.active ? 1 : 0, b.id);
       if (b.password) db.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(hashPassword(b.password), b.id);
       if (!b.active) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(b.id);
     } else {
@@ -364,7 +409,7 @@ const routes = {
       if (!/^[a-z0-9_.]+$/.test(username)) fail(400, 'Username: letters and numbers only');
       if (!b.password) fail(400, 'Set a password');
       if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) fail(400, 'Username already taken');
-      db.prepare('INSERT INTO users (username, name, pass_hash, is_admin, tasks) VALUES (?, ?, ?, ?, ?)').run(username, b.name || username, hashPassword(b.password), b.is_admin ? 1 : 0, tasks);
+      db.prepare('INSERT INTO users (username, name, pass_hash, is_admin, is_manager, tasks) VALUES (?, ?, ?, ?, ?, ?)').run(username, b.name || username, hashPassword(b.password), b.is_admin ? 1 : 0, b.is_manager ? 1 : 0, tasks);
     }
     send(res, 200, { ok: true });
   },
@@ -388,7 +433,8 @@ const server = http.createServer(async (req, res) => {
       const u = currentUser(req);
       if (url.pathname !== '/api/login' && url.pathname !== '/api/logout') {
         if (!u) fail(401, 'Please log in');
-        if (url.pathname.startsWith('/api/admin/') && !u.is_admin) fail(403, 'Owner only');
+        const reviewPaths = ['/api/admin/bills', '/api/admin/work'];
+        if (url.pathname.startsWith('/api/admin/') && !u.is_admin && !(u.is_manager && req.method === 'GET' && reviewPaths.includes(url.pathname))) fail(403, 'Owner only');
       }
       return await handler(req, res, u, url.searchParams);
     }

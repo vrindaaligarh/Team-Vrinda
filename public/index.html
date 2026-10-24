@@ -84,6 +84,7 @@
   .task-tile { display: flex; align-items: center; gap: 8px; text-align: left; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; min-height: 52px; }
   .task-tile.on { border-color: var(--green); background: var(--green-bg); }
   .card.now { border-color: #d29922; }
+  .card.fix { border-color: var(--red); background: var(--red-bg); }
 </style>
 </head>
 <body>
@@ -143,25 +144,26 @@ function renderLogin() {
 function tabs() {
   const t = [['work', 'My Bills'], ['other', 'Work Tasks']];
   if (!state.me.is_admin && !state.me.tasks.length) t.shift();
-  if (state.me.is_admin) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['staff', 'Staff'], ['codes', 'Task Codes']);
+  if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['fixes', 'Fix Requests']);
+  if (state.me.is_admin) t.push(['staff', 'Staff'], ['codes', 'Task Codes']);
   return t;
 }
 function render() {
   clearInterval(refreshTimer);
   if (!state.me) return renderLogin();
-  const myCodes = state.me.is_admin ? 'Owner' : state.me.tasks.join(', ');
+  const myCodes = state.me.is_admin ? 'Owner' : [state.me.is_manager ? 'Manager' : '', ...state.me.tasks].filter(Boolean).join(', ');
   $('#app').innerHTML = `
     <header><h1>Bill Tracker</h1>
       <span class="sub" style="margin:0">${esc(state.me.name)}${myCodes ? " · " + esc(myCodes) : ""}</span>
       <button class="btn ghost small" id="pw">Password</button>
       <button class="btn ghost small" id="lo">Log out</button></header>
     <nav>${tabs().map(([k, l]) => `<button data-tab="${k}" class="${state.tab === k ? 'on' : ''}">${l}</button>`).join('')}</nav>
-    <main id="main"></main>`;
+    <main><div id="fixbar"></div><div id="main"></div></main>`;
   $('nav').onclick = (e) => { const k = e.target.dataset.tab; if (k) { state.tab = k; render(); } };
   $('#lo').onclick = async () => { await api('POST', '/api/logout'); state.me = null; render(); };
   $('#pw').onclick = changePassword;
   loadTab();
-  if (state.tab === 'work' || state.tab === 'all') refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
+  if (['work', 'all', 'other'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
 }
 async function changePassword() {
   const oldPassword = prompt('Current password'); if (oldPassword == null) return;
@@ -170,7 +172,10 @@ async function changePassword() {
 }
 async function loadTab() {
   const m = $('#main'); if (!m) return;
-  try { await ({ work: viewWork, other: viewOther, all: viewAll, otherlog: viewTaskLog, staff: viewStaff, codes: viewCodes }[state.tab])(m); }
+  try {
+    await ({ work: viewWork, other: viewOther, all: viewAll, otherlog: viewTaskLog, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    if (!state.me.is_admin && !state.me.is_manager) await fixBar();
+  }
   catch (e) { toast(e.message, true); }
 }
 
@@ -282,9 +287,12 @@ async function viewAll(m) {
         }).join('');
         const last = b.stages[stages.at(-1).code];
         const status = b.current === 'DONE' ? '<span class="pill green">Ready</span>' : `<span class="pill amber">At ${b.current} ${esc(name(b.current))}</span>`;
+        const done = stages.filter((s) => b.stages[s.code]);
         const detail = filters.open === b.id ? `<tr class="detail"><td colspan="${stages.length + 3}">
-          Bill #${esc(b.bill_no)} created ${fmtFull(b.created_at)} by ${esc(b.created_by_name)}. To fix a mistake, undo a stage (this also clears the stages after it):
-          <div class="row" style="margin-top:8px">${stages.filter((s) => b.stages[s.code]).map((s) => `<button class="btn ghost small" data-reset="${s.code}" data-b="${b.id}">Undo ${s.code}${s === stages[0] ? ' (delete bill)' : ''}</button>`).join('')}</div></td></tr>` : '';
+          Bill #${esc(b.bill_no)} created ${fmtFull(b.created_at)} by ${esc(b.created_by_name)}. Ask the person to fix a wrong punch:
+          <div class="row" style="margin-top:8px">${done.map((s) => { const e = b.stages[s.code]; return `<button class="btn ghost small" data-fix="${e.id}" data-who="${esc(e.start_by_name || e.end_by_name)}">Ask ${esc(e.start_by_name || e.end_by_name)} to fix ${s.code}</button>`; }).join('')}</div>
+          ${state.me.is_admin ? `<p class="sub" style="margin:10px 0 0">Owner: undo a stage (this also clears the stages after it):</p>
+          <div class="row" style="margin-top:6px">${done.map((s) => `<button class="btn ghost small" data-reset="${s.code}" data-b="${b.id}">Undo ${s.code}${s === stages[0] ? ' (delete bill)' : ''}</button>`).join('')}</div>` : ''}</td></tr>` : '';
         return `<tr class="click" data-open="${b.id}"><td><b>#${esc(b.bill_no)}</b><small>${fmtDate(b.created_at)}</small></td>${cells}<td>${last && last.end_at ? dur(b.created_at, last.end_at) : ''}</td><td>${status}</td></tr>${detail}`;
       }).join('') || `<tr><td colspan="${stages.length + 3}" class="empty">No bills for this day.</td></tr>`}
     </table></div>`;
@@ -293,6 +301,8 @@ async function viewAll(m) {
   $('#fs').onchange = (e) => { filters.search = e.target.value.trim(); loadTab(); };
   $('#csv').onclick = () => downloadCsv(stages, bills);
   m.onclick = (e) => {
+    const fx = e.target.closest('button[data-fix]');
+    if (fx) return askFix(fx);
     const r = e.target.closest('button[data-reset]');
     if (r) {
       if (!confirm(`Undo stage ${r.dataset.reset} for this bill?`)) return;
@@ -326,11 +336,42 @@ async function viewTaskLog(m) {
   const { from, to } = dayRange(filters.day);
   const rows = await api('GET', '/api/admin/work?' + new URLSearchParams(from ? { from, to } : {}));
   m.innerHTML = `<div class="card row"><input type="date" id="fd" value="${filters.day}"><button class="btn ghost small" id="fall">All dates</button></div>
-    <div class="card scroll"><table><tr><th>Employee</th><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Note</th></tr>
-    ${rows.map((r) => `<tr><td>${esc(r.start_by_name)}</td><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : '<span class="pill amber">Running</span>'}</td><td>${dur(r.start_at, r.end_at)}</td><td>${esc(r.note)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">Nothing logged.</td></tr>'}
+    <div class="card scroll"><table><tr><th>Employee</th><th>Task</th><th>Start</th><th>End</th><th>Time</th><th></th></tr>
+    ${rows.map((r) => `<tr><td>${esc(r.start_by_name)}</td><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : `<span class="pill amber">Running ${ago(r.start_at)}</span>`}</td><td>${dur(r.start_at, r.end_at)}</td><td><button class="btn ghost small" data-fix="${r.id}" data-who="${esc(r.start_by_name)}">Ask to fix</button></td></tr>`).join('') || '<tr><td colspan="6" class="empty">Nothing logged.</td></tr>'}
     </table></div>`;
+  m.onclick = (e) => { const fx = e.target.closest('button[data-fix]'); if (fx) askFix(fx); };
   $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
   $('#fall').onclick = () => { filters.day = ''; loadTab(); };
+}
+
+// ---------- Fix requests ----------
+function askFix(btn) {
+  const message = prompt(`What should ${btn.dataset.who} fix?`, 'Wrong time punched, please correct');
+  if (!message) return;
+  act(btn, () => api('POST', '/api/fixes', { entry_id: +btn.dataset.fix, message }), `Sent to ${btn.dataset.who}`);
+}
+async function viewFixes(m) {
+  const rows = await api('GET', '/api/fixes');
+  m.innerHTML = `<section class="card"><h2>Fix requests</h2><p class="sub">Ask from All Bills (tap a bill) or Task Log. The person sees the request when they open the app.</p>
+    ${rows.map((f) => `<div class="bill"><div class="info" style="color:var(--text)"><b>${esc(f.employee_name)}</b> · ${esc(f.what)}
+      <div class="sub" style="margin:2px 0">"${esc(f.message)}" · asked by ${esc(f.created_by_name)}, ${fmtFull(f.created_at)}</div>
+      ${f.resolved_at ? `<span class="pill green">Fixed</span> <small class="sub">${esc(f.resolved_by_name)}, ${fmtFull(f.resolved_at)}${f.reply ? ': ' + esc(f.reply) : ''}</small>` : '<span class="pill amber">Waiting</span>'}</div>
+      ${f.resolved_at ? '' : `<button class="btn ghost small" data-close="${f.id}">Close</button>`}</div>`).join('') || '<p class="empty">No requests yet.</p>'}
+    </section>`;
+  m.onclick = (e) => { const c = e.target.closest('button[data-close]'); if (c) act(c, () => api('POST', '/api/fixes/done', { id: +c.dataset.close }), 'Closed'); };
+}
+async function fixBar() {
+  const bar = $('#fixbar'); if (!bar) return;
+  const open = (await api('GET', '/api/fixes')).filter((f) => !f.resolved_at);
+  bar.innerHTML = open.map((f) => `<section class="card fix"><b>${esc(f.created_by_name)} asked you to fix: ${esc(f.what)}</b>
+    <p class="sub" style="margin:4px 0 10px">${esc(f.message)} · ${fmtFull(f.created_at)}</p>
+    <button class="btn green small" data-done="${f.id}">I have fixed it</button></section>`).join('');
+  bar.onclick = (e) => {
+    const b = e.target.closest('button[data-done]'); if (!b) return;
+    const reply = prompt('What did you correct? (optional)', '');
+    if (reply === null) return;
+    act(b, () => api('POST', '/api/fixes/done', { id: +b.dataset.done, reply }), 'Thanks, marked fixed');
+  };
 }
 
 // ---------- Owner: staff ----------
@@ -342,14 +383,14 @@ async function viewStaff(m) {
         <input name="name" placeholder="Full name" value="${esc(u.name)}"><input name="password" placeholder="${u.id ? 'New password (leave blank to keep)' : 'Password'}"></div>
       <p class="sub" style="margin:10px 0 6px">Bill stages this person can do</p>
       <div class="checks">${stageCodes.map((t) => `<label><input type="checkbox" name="t" value="${t.code}" ${(u.tasks || []).includes(t.code) ? 'checked' : ''}> ${t.code} ${esc(t.name)}</label>`).join('')}</div>
-      <div class="row" style="margin-top:10px"><label><input type="checkbox" name="admin" ${u.is_admin ? 'checked' : ''}> Owner access</label>
+      <div class="row" style="margin-top:10px"><label><input type="checkbox" name="admin" ${u.is_admin ? 'checked' : ''}> Owner access</label><label><input type="checkbox" name="manager" ${u.is_manager ? 'checked' : ''}> Manager</label>
         ${u.id ? `<label><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Active</label>` : ''}<span class="grow"></span><button class="btn small">${u.id ? 'Save' : 'Add employee'}</button></div>
     </form>`;
   m.innerHTML = `<h3>Add employee</h3>${form()}<h3>Employees</h3>${users.map(form).join('')}`;
   m.querySelectorAll('form').forEach((f) => f.onsubmit = (e) => {
     e.preventDefault();
     const body = { id: +f.dataset.id || undefined, username: f.username.value, name: f.name.value, password: f.password.value,
-      tasks: [...f.querySelectorAll('input[name=t]:checked')].map((c) => c.value), is_admin: f.admin.checked, active: f.active ? f.active.checked : true };
+      tasks: [...f.querySelectorAll('input[name=t]:checked')].map((c) => c.value), is_admin: f.admin.checked, is_manager: f.manager.checked, active: f.active ? f.active.checked : true };
     act(f.querySelector('button'), () => api('POST', '/api/admin/users', body), 'Saved');
   });
 }
@@ -369,7 +410,7 @@ async function viewCodes(m) {
 }
 
 async function boot() {
-  try { const r = await api('GET', '/api/me'); state.me = r.user; state.tasks = r.tasks; state.tab = r.user.is_admin ? 'all' : (r.user.tasks.length ? 'work' : 'other'); }
+  try { const r = await api('GET', '/api/me'); state.me = r.user; state.tasks = r.tasks; state.tab = r.user.is_admin || r.user.is_manager ? 'all' : (r.user.tasks.length ? 'work' : 'other'); }
   catch { state.me = null; }
   render();
 }
