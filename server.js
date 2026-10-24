@@ -204,7 +204,8 @@ function currentUser(req) {
   return db.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND u.active = 1`).get(m[1]) || null;
 }
 // The bill this person has started (preparing or checking) but not finished yet, if any.
-const busyBill = (u) => db.prepare(`SELECT b.bill_no, e.task_code FROM entries e JOIN bills b ON b.id = e.bill_id
+const busyBill = (u) => db.prepare(`SELECT b.id AS bill_id, b.bill_no, e.task_code, e.start_at, t.name AS task_name FROM entries e
+  JOIN bills b ON b.id = e.bill_id JOIN tasks t ON t.code = e.task_code
   WHERE e.start_by = ? AND e.start_at IS NOT NULL AND e.end_at IS NULL LIMIT 1`).get(u.id) || null;
 function startingBill(u) {
   const busy = busyBill(u);
