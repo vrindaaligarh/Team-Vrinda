@@ -64,6 +64,10 @@
   tr.click { cursor: pointer; }
   tr.click:hover td { background: var(--bg); }
   .detail td { background: var(--bg); white-space: normal; }
+  .task-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .task-tile { display: flex; align-items: center; gap: 8px; text-align: left; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; min-height: 52px; }
+  .task-tile.on { border-color: var(--green); background: var(--green-bg); }
+  .card.now { border-color: #d29922; }
 </style>
 </head>
 <body>
@@ -120,7 +124,8 @@ function renderLogin() {
 
 // ---------- shell ----------
 function tabs() {
-  const t = [['work', 'My Bills'], ['other', 'Other Tasks']];
+  const t = [['work', 'My Bills'], ['other', 'Work Tasks']];
+  if (!state.me.is_admin && !state.me.tasks.length) t.shift();
   if (state.me.is_admin) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['staff', 'Staff'], ['codes', 'Task Codes']);
   return t;
 }
@@ -130,7 +135,7 @@ function render() {
   const myCodes = state.me.is_admin ? 'Owner' : state.me.tasks.join(', ');
   $('#app').innerHTML = `
     <header><h1>Bill Tracker</h1>
-      <span class="sub" style="margin:0">${esc(state.me.name)} · ${esc(myCodes)}</span>
+      <span class="sub" style="margin:0">${esc(state.me.name)}${myCodes ? " · " + esc(myCodes) : ""}</span>
       <button class="btn ghost small" id="pw">Password</button>
       <button class="btn ghost small" id="lo">Log out</button></header>
     <nav>${tabs().map(([k, l]) => `<button data-tab="${k}" class="${state.tab === k ? 'on' : ''}">${l}</button>`).join('')}</nav>
@@ -155,7 +160,7 @@ async function loadTab() {
 // ---------- My Bills (stage queues) ----------
 async function viewWork(m) {
   const queues = await api('GET', '/api/queue');
-  if (!queues.length) { m.innerHTML = `<div class="card"><p class="empty">No bill stages are assigned to your login. Use Other Tasks, or ask the owner.</p></div>`; return; }
+  if (!queues.length) { m.innerHTML = `<div class="card"><p class="empty">No bill stages are assigned to your login. Use Work Tasks, or ask the owner.</p></div>`; return; }
   const allStages = state.tasks.filter((t) => t.stage_order != null);
   m.innerHTML = queues.map(({ task, bills }, qi) => {
     const isFirst = task.stage_order === allStages[0].stage_order;
@@ -166,7 +171,7 @@ async function viewWork(m) {
       let info, btn;
       if (task.kind === 'single') {
         info = p ? `${esc(prev.name)} done by ${esc(p.end_by_name)} at ${fmtTime(p.end_at)} · waiting ${ago(p.end_at)}` : '';
-        btn = `<button class="btn green" data-a="done" data-b="${b.id}" data-t="${task.code}">${task.code === 'FR' ? 'Final Ready' : 'Done now'}</button>`;
+        btn = `<button class="btn green" data-a="done" data-b="${b.id}" data-t="${task.code}">${task.code === 'FR' ? 'Final Ready' : task.code === 'PK' ? 'Packed now' : 'Done now'}</button>`;
       } else if (e && e.start_at) {
         info = `<span class="pill amber">In progress</span> Started by ${esc(e.start_by_name)} at ${fmtTime(e.start_at)} · ${ago(e.start_at)}`;
         btn = `<button class="btn amber" data-a="end" data-b="${b.id}" data-t="${task.code}">End</button>`;
@@ -194,16 +199,17 @@ async function viewWork(m) {
   };
 }
 
-// ---------- Other (non-bill) tasks ----------
+// ---------- Work tasks (A-T, not tied to a bill) ----------
 async function viewOther(m) {
   const rows = await api('GET', '/api/work');
-  const opts = state.tasks.filter((t) => t.stage_order == null).map((t) => `<option value="${t.code}">${t.code} · ${esc(t.name)}</option>`).join('');
-  m.innerHTML = `<section class="card"><h2>Other work</h2><p class="sub">Log any task from the short-code list, like C Basement Cleaning.</p>
-    <form class="row" id="wf"><select name="code" class="grow">${opts}</select><input name="note" class="grow" placeholder="Note (optional)"><button class="btn">Start</button></form></section>
-    <section class="card"><h2>My recent tasks</h2>${rows.length ? `<div class="scroll"><table><tr><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Note</th><th></th></tr>
-    ${rows.map((r) => `<tr><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${fmtTime(r.end_at)}</td><td>${dur(r.start_at, r.end_at)}</td><td>${esc(r.note)}</td>
-      <td>${r.end_at ? '' : `<button class="btn amber small" data-id="${r.id}">End</button>`}</td></tr>`).join('')}</table></div>` : '<p class="empty">No tasks yet.</p>'}</section>`;
-  $('#wf').onsubmit = (e) => { e.preventDefault(); const f = e.target; act(f.querySelector('button'), () => api('POST', '/api/work', { action: 'start', task_code: f.code.value, note: f.note.value }), 'Started'); };
+  const running = rows.find((r) => !r.end_at);
+  const tiles = state.tasks.filter((t) => t.stage_order == null).map((t) => `<button class="task-tile${running && running.task_code === t.code ? ' on' : ''}" data-code="${t.code}" ${running && running.task_code === t.code ? 'disabled' : ''}><span class="code">${t.code}</span><span>${esc(t.name)}</span></button>`).join('');
+  m.innerHTML = `${running ? `<section class="card now"><div class="row"><span class="code">${running.task_code}</span><div class="grow"><b>${esc(running.task_name)}</b><div class="sub" style="margin:0">Started ${fmtTime(running.start_at)} · ${ago(running.start_at)}</div></div><button class="btn amber" data-id="${running.id}">End</button></div></section>` : ''}
+    <section class="card"><h2>What are you doing now?</h2><p class="sub">Tap a task to start it. Tapping another task ends the current one.</p>
+    <div class="task-grid">${tiles}</div></section>
+    <section class="card"><h2>My recent tasks</h2>${rows.length ? `<div class="scroll"><table><tr><th>Task</th><th>Start</th><th>End</th><th>Time</th></tr>
+    ${rows.map((r) => `<tr><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : '<span class="pill amber">Running</span>'}</td><td>${dur(r.start_at, r.end_at)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No tasks yet.</p>'}</section>`;
+  m.querySelectorAll('button[data-code]').forEach((b) => b.onclick = () => act(b, () => api('POST', '/api/work', { action: 'start', task_code: b.dataset.code }), `Started ${b.dataset.code}`));
   m.querySelectorAll('button[data-id]').forEach((b) => b.onclick = () => act(b, () => api('POST', '/api/work', { action: 'end', id: +b.dataset.id }), 'Ended'));
 }
 
@@ -333,7 +339,7 @@ async function viewCodes(m) {
 }
 
 async function boot() {
-  try { const r = await api('GET', '/api/me'); state.me = r.user; state.tasks = r.tasks; state.tab = r.user.is_admin ? 'all' : 'work'; }
+  try { const r = await api('GET', '/api/me'); state.me = r.user; state.tasks = r.tasks; state.tab = r.user.is_admin ? 'all' : (r.user.tasks.length ? 'work' : 'other'); }
   catch { state.me = null; }
   render();
 }

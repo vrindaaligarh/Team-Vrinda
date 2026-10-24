@@ -132,6 +132,31 @@ migrate('2026-10-24-computer-operators', () => {
     if (!tasks.includes('FR')) db.prepare('UPDATE users SET tasks = ? WHERE id = ?').run([...tasks, 'FR'].join(','), u.id);
   }
 });
+// New work-task list A-T. R, S and I now mean general work, so the bill steps move to their own codes:
+// R Preparing Sale Items -> PR, S Checking Sale Items -> CH, I Polythene Packing (bill step) -> PK.
+migrate('2026-10-24-work-codes-a-t', () => {
+  const moves = { R: 'PR', S: 'CH', I: 'PK' };
+  for (const [from, to] of Object.entries(moves)) {
+    const t = db.prepare('SELECT * FROM tasks WHERE code = ?').get(from);
+    if (!t || t.stage_order == null) continue;
+    db.prepare('INSERT INTO tasks (code, name, kind, stage_order) VALUES (?, ?, ?, ?)').run(to, t.name, t.kind, t.stage_order);
+    db.prepare('UPDATE tasks SET stage_order = NULL, kind = ? WHERE code = ?').run('startend', from);
+    db.prepare('UPDATE entries SET task_code = ? WHERE task_code = ? AND bill_id IS NOT NULL').run(to, from);
+    for (const u of db.prepare('SELECT id, tasks FROM users').all()) {
+      const list = u.tasks.split(',').map((x) => x.trim()).filter(Boolean);
+      if (list.includes(from)) db.prepare('UPDATE users SET tasks = ? WHERE id = ?').run(list.map((x) => (x === from ? to : x)).join(','), u.id);
+    }
+  }
+  const work = [['A', '1st Floor'], ['B', '3rd Floor'], ['C', 'Basement Cleaning'], ['D', 'Basement Setting'],
+    ['E', 'Bill Distribution'], ['F', 'Expiry Preparations'], ['G', 'Floor Maintenance'], ['H', 'Local Poly Distribution'],
+    ['I', 'Polythene Packing'], ['J', 'Purchased Goods Setting'], ['K', 'Rack Checking'], ['L', 'Rack Setting'],
+    ['M', 'Sale Goods Check'], ['N', 'Sorting Short Items'], ['O', 'Syrup Cases'], ['P', 'Transport Check'],
+    ['Q', 'Tube Rack Setting'], ['R', 'Sitting Idle'], ['S', 'Ground Floor Cleaning'], ['T', 'Break']];
+  for (const [code, name] of work) {
+    db.prepare(`INSERT INTO tasks (code, name, kind) VALUES (?, ?, 'startend')
+      ON CONFLICT(code) DO UPDATE SET name = excluded.name`).run(code, name);
+  }
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
@@ -268,8 +293,11 @@ const routes = {
   'POST /api/work': async (req, res, u) => {
     const { action, task_code, id, note } = await readBody(req);
     if (action === 'start') {
-      if (!db.prepare('SELECT 1 FROM tasks WHERE code = ?').get(task_code)) fail(400, 'Unknown task');
-      db.prepare('INSERT INTO entries (task_code, start_at, start_by, note) VALUES (?, ?, ?, ?)').run(task_code, now(), u.id, String(note || ''));
+      if (!db.prepare('SELECT 1 FROM tasks WHERE code = ? AND stage_order IS NULL').get(task_code)) fail(400, 'Unknown task');
+      const t = now();
+      // Starting a new task ends whatever this person was doing before.
+      db.prepare('UPDATE entries SET end_at = ?, end_by = ? WHERE bill_id IS NULL AND start_by = ? AND end_at IS NULL').run(t, u.id, u.id);
+      db.prepare('INSERT INTO entries (task_code, start_at, start_by, note) VALUES (?, ?, ?, ?)').run(task_code, t, u.id, String(note || ''));
     } else if (action === 'end') {
       const r = db.prepare('UPDATE entries SET end_at = ?, end_by = ? WHERE id = ? AND bill_id IS NULL AND start_by = ? AND end_at IS NULL').run(now(), u.id, id, u.id);
       if (!r.changes) fail(400, 'Nothing to end');
