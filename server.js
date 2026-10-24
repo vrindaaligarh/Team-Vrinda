@@ -187,6 +187,13 @@ migrate('2026-10-24-add-rayyan', () => {
     db.prepare("INSERT INTO users (username, name, pass_hash, is_admin, tasks) VALUES ('rayyan', 'RAYYAN', ?, 0, 'PR,CH')").run(hashPassword('1234'));
   }
 });
+// Second owner login. Only the password hash is stored here; the password was shared privately.
+migrate('2026-10-24-add-admin-ajanta', () => {
+  if (!db.prepare("SELECT 1 FROM users WHERE username = 'ajanta'").get()) {
+    db.prepare("INSERT INTO users (username, name, pass_hash, is_admin, tasks) VALUES ('ajanta', 'AJANTA', ?, 1, '')")
+      .run('9f6672ea70906e7c44ed25adbcb85981:b0c3ef5d65b1cff8bbcc6e45133d55bf70055d9ee53c3ae8e60fb6ccaaa3115927addeb9e0208b4dcea8db16761aa0176bc96c3899287c319bf9fe53c263a6f4');
+  }
+});
 migrate('2026-10-24-work-code-u-supply', () => {
   db.prepare(`INSERT INTO tasks (code, name, kind) VALUES ('U', 'Supply', 'startend') ON CONFLICT(code) DO UPDATE SET name = excluded.name`).run();
 });
