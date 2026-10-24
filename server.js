@@ -122,6 +122,16 @@ migrate('2026-10-24-staff-list', () => {
     }
   }
 });
+// Computer operators get the Final Ready (FR) button.
+migrate('2026-10-24-computer-operators', () => {
+  const operators = ['afzal', 'bhakti', 'diya', 'mansi', 'neha', 'pooja', 'riya', 'rizwan', 'siya', 'shebi', 'suman', 'yash'];
+  for (const username of operators) {
+    const u = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+    if (!u) continue;
+    const tasks = u.tasks.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!tasks.includes('FR')) db.prepare('UPDATE users SET tasks = ? WHERE id = ?').run([...tasks, 'FR'].join(','), u.id);
+  }
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
