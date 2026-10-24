@@ -157,6 +157,9 @@ migrate('2026-10-24-work-codes-a-t', () => {
       ON CONFLICT(code) DO UPDATE SET name = excluded.name`).run(code, name);
   }
 });
+migrate('2026-10-24-work-code-u-supply', () => {
+  db.prepare(`INSERT INTO tasks (code, name, kind) VALUES ('U', 'Supply', 'startend') ON CONFLICT(code) DO UPDATE SET name = excluded.name`).run();
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();

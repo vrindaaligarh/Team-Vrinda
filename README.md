@@ -46,7 +46,7 @@ Work Tasks (everyone, tap to start, End to stop): A 1st Floor, B 3rd Floor, C Ba
 D Basement Setting, E Bill Distribution, F Expiry Preparations, G Floor Maintenance, H Local Poly Distribution,
 I Polythene Packing, J Purchased Goods Setting, K Rack Checking, L Rack Setting, M Sale Goods Check,
 N Sorting Short Items, O Syrup Cases, P Transport Check, Q Tube Rack Setting, R Sitting Idle,
-S Ground Floor Cleaning, T Break. The owner sees them all under **Task Log**.
+S Ground Floor Cleaning, T Break, U Supply. The owner sees them all under **Task Log**.
 
 The owner can add staff, reset passwords, and change who does which stage under **Staff**,
 and add new short codes under **Task Codes**. Mistakes can be fixed in **All Bills**: click a
