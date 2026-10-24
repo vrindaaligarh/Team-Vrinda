@@ -1,0 +1,9 @@
+{
+  "name": "shop-bill-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tracks each bill through R, S, I and Final Ready with employee logins and timestamps",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=22.13" }
+}

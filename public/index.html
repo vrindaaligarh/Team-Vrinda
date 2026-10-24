@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bill Tracker</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #fff; --text: #1d2330; --muted: #6b7280; --line: #e3e6ea;
+    --primary: #1f6feb; --primary-text: #fff; --green: #1a7f37; --green-bg: #e6f4ea;
+    --amber: #9a6700; --amber-bg: #fff4d6; --red: #c62828; --red-bg: #fde8e8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111418; --card: #1b1f25; --text: #e6e8eb; --muted: #9aa3ad; --line: #2c323a;
+      --primary: #4c8dff; --green: #5bd17a; --green-bg: #173322; --amber: #f0c050; --amber-bg: #3a2e10;
+      --red: #ff7b72; --red-bg: #3d1a1a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  header { background: var(--card); border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 17px; margin: 0; flex: 1; }
+  nav { display: flex; gap: 4px; flex-wrap: wrap; padding: 10px 16px 0; max-width: 1200px; margin: 0 auto; }
+  nav button { background: none; border: 0; padding: 8px 12px; border-radius: 8px; color: var(--muted); font-weight: 600; cursor: pointer; font-size: 14px; }
+  nav button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  main { max-width: 1200px; margin: 0 auto; padding: 12px 16px 40px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+  .card h2 { margin: 0 0 4px; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+  .code { display: inline-grid; place-items: center; min-width: 30px; height: 30px; padding: 0 6px; border-radius: 8px; background: var(--primary); color: var(--primary-text); font-weight: 700; font-size: 14px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  button.btn { border: 0; border-radius: 10px; padding: 10px 16px; font-weight: 700; font-size: 15px; cursor: pointer; background: var(--primary); color: var(--primary-text); }
+  button.btn.green { background: var(--green); color: #fff; }
+  button.btn.amber { background: #d29922; color: #1d1600; }
+  button.btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); font-weight: 600; }
+  button.btn.small { padding: 5px 10px; font-size: 13px; }
+  button.btn:disabled { opacity: .5; cursor: wait; }
+  input, select { font: inherit; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--text); min-width: 0; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; }
+  .bill { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .bill:first-of-type { border-top: 0; }
+  .bill .no { font-size: 18px; font-weight: 700; min-width: 90px; }
+  .bill .info { flex: 1; color: var(--muted); font-size: 13px; min-width: 160px; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+  .pill.green { background: var(--green-bg); color: var(--green); }
+  .pill.amber { background: var(--amber-bg); color: var(--amber); }
+  .pill.gray { background: var(--bg); color: var(--muted); }
+  .empty { color: var(--muted); padding: 8px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td small { color: var(--muted); display: block; }
+  .scroll { overflow-x: auto; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+  .stat b { display: block; font-size: 22px; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; display: none; z-index: 10; max-width: 90vw; }
+  #toast.err { background: var(--red); color: #fff; }
+  .login { max-width: 360px; margin: 10vh auto; }
+  .login input { width: 100%; margin-bottom: 10px; }
+  .login button { width: 100%; }
+  .checks { display: flex; flex-wrap: wrap; gap: 6px; }
+  .checks label { border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font-size: 13px; cursor: pointer; }
+  tr.click { cursor: pointer; }
+  tr.click:hover td { background: var(--bg); }
+  .detail td { background: var(--bg); white-space: normal; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast"></div>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString([], { day: '2-digit', month: 'short' }) : '';
+const fmtFull = (iso) => iso ? fmtDate(iso) + ' ' + fmtTime(iso) : '';
+function dur(a, b) {
+  if (a == null || b == null || a === '' || b === '') return '';
+  const m = Math.round((new Date(b) - new Date(a)) / 60000);
+  return m < 60 ? m + 'm' : Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm';
+}
+const ago = (iso) => dur(iso, new Date().toISOString()) || '0m';
+
+let state = { me: null, tasks: [], tab: 'work' };
+let refreshTimer = null;
+
+function toast(msg, err) {
+  const t = $('#toast'); t.textContent = msg; t.className = err ? 'err' : ''; t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(() => (t.style.display = 'none'), 2500);
+}
+async function api(method, url, body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401 && url !== '/api/login') { state.me = null; render(); throw new Error('Please log in'); }
+  if (!r.ok) throw new Error(data.error || 'Error');
+  return data;
+}
+async function act(btn, fn, okMsg) {
+  if (btn) btn.disabled = true;
+  try { await fn(); if (okMsg) toast(okMsg); await loadTab(); }
+  catch (e) { toast(e.message, true); }
+  finally { if (btn) btn.disabled = false; }
+}
+
+// ---------- login ----------
+function renderLogin() {
+  $('#app').innerHTML = `
+    <div class="card login">
+      <h2>Shop Bill Tracker</h2><p class="sub">Log in with your ID</p>
+      <form id="lf"><input name="u" placeholder="Username" autocapitalize="off" autofocus>
+      <input name="p" type="password" placeholder="Password"><button class="btn">Log in</button></form>
+    </div>`;
+  $('#lf').onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api('POST', '/api/login', { username: e.target.u.value, password: e.target.p.value }); await boot(); }
+    catch (err) { toast(err.message, true); }
+  };
+}
+
+// ---------- shell ----------
+function tabs() {
+  const t = [['work', 'My Bills'], ['other', 'Other Tasks']];
+  if (state.me.is_admin) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['staff', 'Staff'], ['codes', 'Task Codes']);
+  return t;
+}
+function render() {
+  clearInterval(refreshTimer);
+  if (!state.me) return renderLogin();
+  const myCodes = state.me.is_admin ? 'Owner' : state.me.tasks.join(', ');
+  $('#app').innerHTML = `
+    <header><h1>Bill Tracker</h1>
+      <span class="sub" style="margin:0">${esc(state.me.name)} · ${esc(myCodes)}</span>
+      <button class="btn ghost small" id="pw">Password</button>
+      <button class="btn ghost small" id="lo">Log out</button></header>
+    <nav>${tabs().map(([k, l]) => `<button data-tab="${k}" class="${state.tab === k ? 'on' : ''}">${l}</button>`).join('')}</nav>
+    <main id="main"></main>`;
+  $('nav').onclick = (e) => { const k = e.target.dataset.tab; if (k) { state.tab = k; render(); } };
+  $('#lo').onclick = async () => { await api('POST', '/api/logout'); state.me = null; render(); };
+  $('#pw').onclick = changePassword;
+  loadTab();
+  if (state.tab === 'work' || state.tab === 'all') refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
+}
+async function changePassword() {
+  const oldPassword = prompt('Current password'); if (oldPassword == null) return;
+  const newPassword = prompt('New password (at least 4 characters)'); if (!newPassword) return;
+  try { await api('POST', '/api/password', { oldPassword, newPassword }); toast('Password changed'); } catch (e) { toast(e.message, true); }
+}
+async function loadTab() {
+  const m = $('#main'); if (!m) return;
+  try { await ({ work: viewWork, other: viewOther, all: viewAll, otherlog: viewTaskLog, staff: viewStaff, codes: viewCodes }[state.tab])(m); }
+  catch (e) { toast(e.message, true); }
+}
+
+// ---------- My Bills (stage queues) ----------
+async function viewWork(m) {
+  const queues = await api('GET', '/api/queue');
+  if (!queues.length) { m.innerHTML = `<div class="card"><p class="empty">No bill stages are assigned to your login. Use Other Tasks, or ask the owner.</p></div>`; return; }
+  const allStages = state.tasks.filter((t) => t.stage_order != null);
+  m.innerHTML = queues.map(({ task, bills }, qi) => {
+    const isFirst = task.stage_order === allStages[0].stage_order;
+    const prev = allStages[allStages.findIndex((t) => t.code === task.code) - 1];
+    const rows = bills.map((b) => {
+      const e = b.stages[task.code];
+      const p = prev && b.stages[prev.code];
+      let info, btn;
+      if (task.kind === 'single') {
+        info = p ? `${esc(prev.name)} done by ${esc(p.end_by_name)} at ${fmtTime(p.end_at)} · waiting ${ago(p.end_at)}` : '';
+        btn = `<button class="btn green" data-a="done" data-b="${b.id}" data-t="${task.code}">${task.code === 'FR' ? 'Final Ready' : 'Done now'}</button>`;
+      } else if (e && e.start_at) {
+        info = `<span class="pill amber">In progress</span> Started by ${esc(e.start_by_name)} at ${fmtTime(e.start_at)} · ${ago(e.start_at)}`;
+        btn = `<button class="btn amber" data-a="end" data-b="${b.id}" data-t="${task.code}">End</button>`;
+      } else {
+        info = `<span class="pill gray">To do</span> ${p ? `${esc(prev.name)} by ${esc(p.end_by_name)}, finished ${fmtTime(p.end_at)} · waiting ${ago(p.end_at)}` : ''}`;
+        btn = `<button class="btn" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`;
+      }
+      return `<div class="bill"><div class="no">#${esc(b.bill_no)}</div><div class="info">${info}</div>${btn}</div>`;
+    }).join('');
+    return `<section class="card">
+      <h2><span class="code">${task.code}</span>${esc(task.name)}</h2>
+      <p class="sub">${task.kind === 'single' ? 'One tap marks the current time.' : 'Press Start when you begin and End when you finish.'}${bills.length ? ` · ${bills.length} bill(s)` : ''}</p>
+      ${isFirst ? `<form class="row newbill" style="margin-bottom:8px"><input name="no" class="grow" placeholder="Bill number" inputmode="numeric" required><button class="btn">Start</button></form>` : ''}
+      ${rows || `<p class="empty">${isFirst ? 'No bill in progress.' : 'Nothing waiting right now.'}</p>`}
+    </section>`;
+  }).join('');
+  m.querySelectorAll('form.newbill').forEach((f) => f.onsubmit = (e) => {
+    e.preventDefault();
+    act(f.querySelector('button'), () => api('POST', '/api/bills', { bill_no: f.no.value }), `Bill ${f.no.value} started`);
+  });
+  m.onclick = (e) => {
+    const b = e.target.closest('button[data-a]'); if (!b) return;
+    const label = { start: 'Started', end: 'Ended', done: 'Marked' }[b.dataset.a];
+    act(b, () => api('POST', '/api/stage', { bill_id: +b.dataset.b, task_code: b.dataset.t, action: b.dataset.a }), label + ' at ' + fmtTime(new Date().toISOString()));
+  };
+}
+
+// ---------- Other (non-bill) tasks ----------
+async function viewOther(m) {
+  const rows = await api('GET', '/api/work');
+  const opts = state.tasks.filter((t) => t.stage_order == null).map((t) => `<option value="${t.code}">${t.code} · ${esc(t.name)}</option>`).join('');
+  m.innerHTML = `<section class="card"><h2>Other work</h2><p class="sub">Log any task from the short-code list, like C Basement Cleaning.</p>
+    <form class="row" id="wf"><select name="code" class="grow">${opts}</select><input name="note" class="grow" placeholder="Note (optional)"><button class="btn">Start</button></form></section>
+    <section class="card"><h2>My recent tasks</h2>${rows.length ? `<div class="scroll"><table><tr><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Note</th><th></th></tr>
+    ${rows.map((r) => `<tr><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${fmtTime(r.end_at)}</td><td>${dur(r.start_at, r.end_at)}</td><td>${esc(r.note)}</td>
+      <td>${r.end_at ? '' : `<button class="btn amber small" data-id="${r.id}">End</button>`}</td></tr>`).join('')}</table></div>` : '<p class="empty">No tasks yet.</p>'}</section>`;
+  $('#wf').onsubmit = (e) => { e.preventDefault(); const f = e.target; act(f.querySelector('button'), () => api('POST', '/api/work', { action: 'start', task_code: f.code.value, note: f.note.value }), 'Started'); };
+  m.querySelectorAll('button[data-id]').forEach((b) => b.onclick = () => act(b, () => api('POST', '/api/work', { action: 'end', id: +b.dataset.id }), 'Ended'));
+}
+
+// ---------- Owner: all bills ----------
+let filters = { day: new Date().toLocaleDateString('en-CA'), search: '', open: null };
+function dayRange(day) {
+  if (!day) return {};
+  const from = new Date(day + 'T00:00:00'); const to = new Date(from); to.setDate(to.getDate() + 1);
+  return { from: from.toISOString(), to: to.toISOString() };
+}
+async function viewAll(m) {
+  const { from, to } = dayRange(filters.day);
+  const q = new URLSearchParams({ ...(from && { from, to }), ...(filters.search && { search: filters.search }) });
+  const { stages, bills } = await api('GET', '/api/admin/bills?' + q);
+  const done = bills.filter((b) => b.current === 'DONE');
+  const avg = (code) => {
+    const d = bills.map((b) => b.stages[code]).filter((e) => e && e.start_at && e.end_at).map((e) => new Date(e.end_at) - new Date(e.start_at));
+    return d.length ? dur(0, d.reduce((a, b) => a + b, 0) / d.length) : '–';
+  };
+  const avgTotal = done.length ? dur(0, done.reduce((a, b) => a + (new Date(b.stages[stages.at(-1).code].end_at) - new Date(b.created_at)), 0) / done.length) : '–';
+  const name = (c) => stages.find((s) => s.code === c)?.name || c;
+  m.innerHTML = `
+    <div class="card row"><input type="date" id="fd" value="${filters.day}"><button class="btn ghost small" id="fall">All dates</button>
+      <input id="fs" class="grow" placeholder="Search bill number" value="${esc(filters.search)}"><button class="btn ghost small" id="csv">Download CSV</button></div>
+    <div class="stats">
+      <div class="stat"><b>${bills.length}</b><span>Bills</span></div>
+      <div class="stat"><b>${done.length}</b><span>Final ready</span></div>
+      ${stages.filter((s) => s.kind === 'startend').map((s) => `<div class="stat"><b>${avg(s.code)}</b><span>Avg ${s.code} ${esc(s.name)}</span></div>`).join('')}
+      <div class="stat"><b>${avgTotal}</b><span>Avg start to final ready</span></div>
+    </div>
+    <div class="card scroll"><table>
+      <tr><th>Bill</th>${stages.map((s) => `<th>${s.code} · ${esc(s.name)}</th>`).join('')}<th>Total</th><th>Status</th></tr>
+      ${bills.map((b) => {
+        const cells = stages.map((s) => {
+          const e = b.stages[s.code];
+          if (!e) return '<td></td>';
+          if (s.kind === 'single') return `<td>${fmtTime(e.end_at)}<small>${esc(e.end_by_name)}</small></td>`;
+          const by = e.end_by && e.end_by !== e.start_by ? `${esc(e.start_by_name)} / ${esc(e.end_by_name)}` : esc(e.start_by_name);
+          return `<td>${fmtTime(e.start_at)} – ${e.end_at ? fmtTime(e.end_at) : '…'}<small>${e.end_at ? dur(e.start_at, e.end_at) + ' · ' : ''}${by}</small></td>`;
+        }).join('');
+        const last = b.stages[stages.at(-1).code];
+        const status = b.current === 'DONE' ? '<span class="pill green">Ready</span>' : `<span class="pill amber">At ${b.current} ${esc(name(b.current))}</span>`;
+        const detail = filters.open === b.id ? `<tr class="detail"><td colspan="${stages.length + 3}">
+          Bill #${esc(b.bill_no)} created ${fmtFull(b.created_at)} by ${esc(b.created_by_name)}. To fix a mistake, undo a stage (this also clears the stages after it):
+          <div class="row" style="margin-top:8px">${stages.filter((s) => b.stages[s.code]).map((s) => `<button class="btn ghost small" data-reset="${s.code}" data-b="${b.id}">Undo ${s.code}${s === stages[0] ? ' (delete bill)' : ''}</button>`).join('')}</div></td></tr>` : '';
+        return `<tr class="click" data-open="${b.id}"><td><b>#${esc(b.bill_no)}</b><small>${fmtDate(b.created_at)}</small></td>${cells}<td>${last && last.end_at ? dur(b.created_at, last.end_at) : ''}</td><td>${status}</td></tr>${detail}`;
+      }).join('') || `<tr><td colspan="${stages.length + 3}" class="empty">No bills for this day.</td></tr>`}
+    </table></div>`;
+  $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
+  $('#fall').onclick = () => { filters.day = ''; loadTab(); };
+  $('#fs').onchange = (e) => { filters.search = e.target.value.trim(); loadTab(); };
+  $('#csv').onclick = () => downloadCsv(stages, bills);
+  m.onclick = (e) => {
+    const r = e.target.closest('button[data-reset]');
+    if (r) {
+      if (!confirm(`Undo stage ${r.dataset.reset} for this bill?`)) return;
+      return act(r, () => api('POST', '/api/admin/reset-stage', { bill_id: +r.dataset.b, task_code: r.dataset.reset }), 'Undone');
+    }
+    const tr = e.target.closest('tr[data-open]');
+    if (tr) { filters.open = filters.open === +tr.dataset.open ? null : +tr.dataset.open; loadTab(); }
+  };
+}
+function downloadCsv(stages, bills) {
+  const head = ['Bill No', 'Created'];
+  stages.forEach((s) => s.kind === 'single' ? head.push(`${s.code} Time`, `${s.code} By`) : head.push(`${s.code} Start`, `${s.code} End`, `${s.code} Minutes`, `${s.code} By`));
+  const lines = [head];
+  for (const b of bills) {
+    const row = [b.bill_no, fmtFull(b.created_at)];
+    for (const s of stages) {
+      const e = b.stages[s.code] || {};
+      if (s.kind === 'single') row.push(fmtFull(e.end_at), e.end_by_name || '');
+      else row.push(fmtFull(e.start_at), fmtFull(e.end_at), e.start_at && e.end_at ? Math.round((new Date(e.end_at) - new Date(e.start_at)) / 60000) : '', [e.start_by_name, e.end_by_name].filter((v, i, a) => v && a.indexOf(v) === i).join(' / '));
+    }
+    lines.push(row);
+  }
+  const csv = lines.map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = `bills-${filters.day || 'all'}.csv`; a.click();
+}
+
+// ---------- Owner: other task log ----------
+async function viewTaskLog(m) {
+  const { from, to } = dayRange(filters.day);
+  const rows = await api('GET', '/api/admin/work?' + new URLSearchParams(from ? { from, to } : {}));
+  m.innerHTML = `<div class="card row"><input type="date" id="fd" value="${filters.day}"><button class="btn ghost small" id="fall">All dates</button></div>
+    <div class="card scroll"><table><tr><th>Employee</th><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Note</th></tr>
+    ${rows.map((r) => `<tr><td>${esc(r.start_by_name)}</td><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : '<span class="pill amber">Running</span>'}</td><td>${dur(r.start_at, r.end_at)}</td><td>${esc(r.note)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">Nothing logged.</td></tr>'}
+    </table></div>`;
+  $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
+  $('#fall').onclick = () => { filters.day = ''; loadTab(); };
+}
+
+// ---------- Owner: staff ----------
+async function viewStaff(m) {
+  const users = await api('GET', '/api/admin/users');
+  const stageCodes = state.tasks.filter((t) => t.stage_order != null);
+  const form = (u = {}) => `<form class="card" data-id="${u.id || ''}">
+      <div class="row"><input name="username" placeholder="Username" value="${esc(u.username)}" ${u.id ? 'disabled' : ''}>
+        <input name="name" placeholder="Full name" value="${esc(u.name)}"><input name="password" placeholder="${u.id ? 'New password (leave blank to keep)' : 'Password'}"></div>
+      <p class="sub" style="margin:10px 0 6px">Bill stages this person can do</p>
+      <div class="checks">${stageCodes.map((t) => `<label><input type="checkbox" name="t" value="${t.code}" ${(u.tasks || []).includes(t.code) ? 'checked' : ''}> ${t.code} ${esc(t.name)}</label>`).join('')}</div>
+      <div class="row" style="margin-top:10px"><label><input type="checkbox" name="admin" ${u.is_admin ? 'checked' : ''}> Owner access</label>
+        ${u.id ? `<label><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Active</label>` : ''}<span class="grow"></span><button class="btn small">${u.id ? 'Save' : 'Add employee'}</button></div>
+    </form>`;
+  m.innerHTML = `<h3>Add employee</h3>${form()}<h3>Employees</h3>${users.map(form).join('')}`;
+  m.querySelectorAll('form').forEach((f) => f.onsubmit = (e) => {
+    e.preventDefault();
+    const body = { id: +f.dataset.id || undefined, username: f.username.value, name: f.name.value, password: f.password.value,
+      tasks: [...f.querySelectorAll('input[name=t]:checked')].map((c) => c.value), is_admin: f.admin.checked, active: f.active ? f.active.checked : true };
+    act(f.querySelector('button'), () => api('POST', '/api/admin/users', body), 'Saved');
+  });
+}
+
+// ---------- Owner: task codes ----------
+async function viewCodes(m) {
+  m.innerHTML = `<section class="card"><h2>Add or rename a task code</h2><p class="sub">Employees can log these from Other Tasks.</p>
+    <form class="row" id="cf"><input name="code" placeholder="Code e.g. T" style="width:110px"><input name="name" class="grow" placeholder="Task name">
+    <select name="kind"><option value="startend">Start + End</option><option value="single">One tap</option></select><button class="btn">Save</button></form></section>
+    <section class="card scroll"><table><tr><th>Code</th><th>Task</th><th>Buttons</th><th>Bill stage</th></tr>
+    ${state.tasks.map((t) => `<tr><td><span class="code">${t.code}</span></td><td>${esc(t.name)}</td><td>${t.kind === 'single' ? 'One tap' : 'Start + End'}</td><td>${t.stage_order ? 'Step ' + t.stage_order : ''}</td></tr>`).join('')}
+    </table></section>`;
+  $('#cf').onsubmit = (e) => {
+    e.preventDefault(); const f = e.target;
+    act(f.querySelector('button'), async () => { await api('POST', '/api/admin/tasks', { code: f.code.value, name: f.name.value, kind: f.kind.value }); state.tasks = (await api('GET', '/api/me')).tasks; }, 'Saved');
+  };
+}
+
+async function boot() {
+  try { const r = await api('GET', '/api/me'); state.me = r.user; state.tasks = r.tasks; state.tab = r.user.is_admin ? 'all' : 'work'; }
+  catch { state.me = null; }
+  render();
+}
+boot();
+</script>
+</body>
+</html>
