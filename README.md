@@ -34,16 +34,12 @@ $0.25/month for the disk. Render backs up the disk daily.
 2. On render.com: New > Blueprint, pick the repository, Apply.
 3. Open the `https://bill-tracker-xxxx.onrender.com` link it gives you and log in as admin.
 
-## Starting logins (change these!)
+## Logins
 
-| Username | Password | Role |
-| -------- | -------- | ---- |
-| admin | admin123 | Owner (all screens) |
-| adnan | 1234 | R |
-| junaid | 1234 | S |
-| faraz | 1234 | S |
-| irfan | 1234 | I |
-| operator | 1234 | FR |
+Owner: **admin** / admin123 (change it from the Password button).
+
+Staff: every employee logs in with their name in lowercase (e.g. `adnan`, `junaid`, `vicky`) and password 1234.
+Stage access: ADNAN R, JUNAID and FARAZ S, IRFAN I. Give the computer operator FR (Final Ready) under **Staff**.
 
 The owner can add staff, reset passwords, and change who does which stage under **Staff**,
 and add new short codes under **Task Codes**. Mistakes can be fixed in **All Bills**: click a

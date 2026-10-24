@@ -88,6 +88,41 @@ if (!db.prepare('SELECT 1 FROM users LIMIT 1').get()) {
   ins.run('operator', 'Computer Operator', hashPassword('1234'), 0, 'FR');
 }
 
+// ---------- one-time data changes (each runs once per database) ----------
+db.exec('CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
+function migrate(name, fn) {
+  if (db.prepare('SELECT 1 FROM migrations WHERE name = ?').get(name)) return;
+  db.exec('BEGIN');
+  try { fn(); db.prepare('INSERT INTO migrations (name, applied_at) VALUES (?, ?)').run(name, new Date().toISOString()); db.exec('COMMIT'); }
+  catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+// Replace the starter staff with the shop's real staff list (password 1234). Owner logins are untouched.
+migrate('2026-10-24-staff-list', () => {
+  const staff = ['AFZAL', 'BHAKTI', 'DIYA', 'MANSI', 'NEHA', 'POOJA', 'RIYA', 'RIZWAN', 'SIYA', 'SHEBI', 'SUMAN', 'YASH',
+    'ARUN', 'ANAS', 'AZEEM', 'ABHAY', 'FARAZ', 'HAMZA', 'JUNAID', 'REHAN', 'SAFFAN', 'SUFIYAN', 'ZUHAIB', 'OWAIS', 'NAVED',
+    'ADNAN', 'RAJ', 'SAIF', 'FARHAN', 'HAYYUL', 'MUKUL', 'SONU', 'DORI', 'HIMANSHU', 'IRFAN', 'ROCKY', 'TALHA', 'VICKY'];
+  const stageFor = { ADNAN: 'R', JUNAID: 'S', FARAZ: 'S', IRFAN: 'I' };
+  const keep = new Set(staff.map((s) => s.toLowerCase()));
+  const used = db.prepare(`SELECT 1 FROM bills WHERE created_by = ?1 UNION SELECT 1 FROM entries WHERE start_by = ?1 OR end_by = ?1`);
+  for (const u of db.prepare('SELECT * FROM users WHERE is_admin = 0').all()) {
+    if (keep.has(u.username)) continue;
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
+    // Users with recorded work stay in history but can no longer log in.
+    if (used.get(u.id)) db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(u.id);
+    else db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
+  }
+  for (const name of staff) {
+    const username = name.toLowerCase();
+    const existing = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+    if (existing) {
+      db.prepare('UPDATE users SET name = ?, pass_hash = ?, active = 1 WHERE id = ?').run(name, hashPassword('1234'), existing.id);
+    } else {
+      db.prepare('INSERT INTO users (username, name, pass_hash, is_admin, tasks) VALUES (?, ?, ?, 0, ?)')
+        .run(username, name, hashPassword('1234'), stageFor[name] || '');
+    }
+  }
+});
+
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
 const stages = () => db.prepare('SELECT * FROM tasks WHERE stage_order IS NOT NULL ORDER BY stage_order').all();
