@@ -162,7 +162,9 @@ async function viewWork(m) {
   const queues = await api('GET', '/api/queue');
   if (!queues.length) { m.innerHTML = `<div class="card"><p class="empty">No bill stages are assigned to your login. Use Work Tasks, or ask the owner.</p></div>`; return; }
   const allStages = state.tasks.filter((t) => t.stage_order != null);
-  m.innerHTML = queues.map(({ task, bills }, qi) => {
+  const needsSearch = queues.some(({ task }) => task.stage_order !== allStages[0].stage_order);
+  const searchBox = needsSearch ? `<div class="card row"><input id="billsearch" class="grow" placeholder="Find bill number, e.g. T050810" value="${esc(filters.queue || '')}" autocapitalize="characters" autocomplete="off"></div>` : '';
+  m.innerHTML = searchBox + queues.map(({ task, bills }, qi) => {
     const isFirst = task.stage_order === allStages[0].stage_order;
     const prev = allStages[allStages.findIndex((t) => t.code === task.code) - 1];
     const rows = bills.map((b) => {
@@ -179,19 +181,30 @@ async function viewWork(m) {
         info = `<span class="pill gray">To do</span> ${p ? `${esc(prev.name)} by ${esc(p.end_by_name)}, finished ${fmtTime(p.end_at)} · waiting ${ago(p.end_at)}` : ''}`;
         btn = `<button class="btn" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`;
       }
-      return `<div class="bill"><div class="no">#${esc(b.bill_no)}</div><div class="info">${info}</div>${btn}</div>`;
+      return `<div class="bill" data-no="${esc(b.bill_no.toUpperCase())}"><div class="no">#${esc(b.bill_no)}</div><div class="info">${info}</div>${btn}</div>`;
     }).join('');
     return `<section class="card">
       <h2><span class="code">${task.code}</span>${esc(task.name)}</h2>
       <p class="sub">${task.kind === 'single' ? 'One tap marks the current time.' : 'Press Start when you begin and End when you finish.'}${bills.length ? ` · ${bills.length} bill(s)` : ''}</p>
-      ${isFirst ? `<form class="row newbill" style="margin-bottom:8px"><input name="no" class="grow" placeholder="Bill number" inputmode="numeric" required><button class="btn">Start</button></form>` : ''}
+      ${isFirst ? `<form class="row newbill" style="margin-bottom:8px"><input name="no" class="grow billno" placeholder="Bill no. e.g. T050810" maxlength="7" autocapitalize="characters" autocomplete="off" required><button class="btn">Start</button></form>` : ''}
       ${rows || `<p class="empty">${isFirst ? 'No bill in progress.' : 'Nothing waiting right now.'}</p>`}
     </section>`;
   }).join('');
   m.querySelectorAll('form.newbill').forEach((f) => f.onsubmit = (e) => {
     e.preventDefault();
-    act(f.querySelector('button'), () => api('POST', '/api/bills', { bill_no: f.no.value }), `Bill ${f.no.value} started`);
+    const no = f.no.value.trim().toUpperCase();
+    if (!/^[TR]\d{6}$/.test(no)) return toast('Bill number must be T or R and 6 digits, like T050810', true);
+    act(f.querySelector('button'), () => api('POST', '/api/bills', { bill_no: no }), `Bill ${no} started`);
   });
+  m.querySelectorAll('input.billno').forEach((i) => i.oninput = () => { i.value = i.value.toUpperCase().replace(/[^TR0-9]/g, ''); });
+  const search = $('#billsearch');
+  if (search) {
+    const filter = () => {
+      const q = search.value.trim().toUpperCase(); filters.queue = q;
+      m.querySelectorAll('.bill').forEach((el) => { el.hidden = q && !el.dataset.no.includes(q); });
+    };
+    search.oninput = filter; filter();
+  }
   m.onclick = (e) => {
     const b = e.target.closest('button[data-a]'); if (!b) return;
     const label = { start: 'Started', end: 'Ended', done: 'Marked' }[b.dataset.a];
@@ -201,12 +214,12 @@ async function viewWork(m) {
 
 // ---------- Work tasks (A-T, not tied to a bill) ----------
 async function viewOther(m) {
-  const rows = await api('GET', '/api/work');
+  const { rows, busy } = await api('GET', '/api/work');
   const running = rows.find((r) => !r.end_at);
   const tiles = state.tasks.filter((t) => t.stage_order == null).map((t) => `<button class="task-tile${running && running.task_code === t.code ? ' on' : ''}" data-code="${t.code}" ${running && running.task_code === t.code ? 'disabled' : ''}><span class="code">${t.code}</span><span>${esc(t.name)}</span></button>`).join('');
   m.innerHTML = `${running ? `<section class="card now"><div class="row"><span class="code">${running.task_code}</span><div class="grow"><b>${esc(running.task_name)}</b><div class="sub" style="margin:0">Started ${fmtTime(running.start_at)} · ${ago(running.start_at)}</div></div><button class="btn amber" data-id="${running.id}">End</button></div></section>` : ''}
     <section class="card"><h2>What are you doing now?</h2><p class="sub">Tap a task to start it. Tapping another task ends the current one.</p>
-    <div class="task-grid">${tiles}</div></section>
+    ${busy ? `<p class="pill amber" style="margin-bottom:10px">Finish bill ${esc(busy.bill_no)} in My Bills first</p>` : ''}<div class="task-grid"${busy ? ' style="opacity:.45;pointer-events:none"' : ''}>${tiles}</div></section>
     <section class="card"><h2>My recent tasks</h2>${rows.length ? `<div class="scroll"><table><tr><th>Task</th><th>Start</th><th>End</th><th>Time</th></tr>
     ${rows.map((r) => `<tr><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : '<span class="pill amber">Running</span>'}</td><td>${dur(r.start_at, r.end_at)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No tasks yet.</p>'}</section>`;
   m.querySelectorAll('button[data-code]').forEach((b) => b.onclick = () => act(b, () => api('POST', '/api/work', { action: 'start', task_code: b.dataset.code }), `Started ${b.dataset.code}`));
@@ -214,7 +227,7 @@ async function viewOther(m) {
 }
 
 // ---------- Owner: all bills ----------
-let filters = { day: new Date().toLocaleDateString('en-CA'), search: '', open: null };
+let filters = { day: new Date().toLocaleDateString('en-CA'), search: '', open: null, queue: '' };
 function dayRange(day) {
   if (!day) return {};
   const from = new Date(day + 'T00:00:00'); const to = new Date(from); to.setDate(to.getDate() + 1);

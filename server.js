@@ -185,6 +185,16 @@ function currentUser(req) {
   if (!m) return null;
   return db.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND u.active = 1`).get(m[1]) || null;
 }
+// The bill this person has started (preparing or checking) but not finished yet, if any.
+const busyBill = (u) => db.prepare(`SELECT b.bill_no, e.task_code FROM entries e JOIN bills b ON b.id = e.bill_id
+  WHERE e.start_by = ? AND e.start_at IS NOT NULL AND e.end_at IS NULL LIMIT 1`).get(u.id) || null;
+function startingBill(u) {
+  const busy = busyBill(u);
+  if (busy) fail(400, `Finish bill ${busy.bill_no} first`);
+  // Starting a bill ends any work task the person had running.
+  db.prepare('UPDATE entries SET end_at = ?, end_by = ? WHERE bill_id IS NULL AND start_by = ? AND end_at IS NULL').run(now(), u.id, u.id);
+}
+const BILL_NO = /^[TR]\d{6}$/;
 const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, tasks: userTasks(u), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
@@ -250,8 +260,9 @@ const routes = {
   'POST /api/bills': async (req, res, u) => {
     const first = stages()[0];
     if (!canDo(u, first.code)) fail(403, 'Not allowed');
-    const billNo = String((await readBody(req)).bill_no || '').trim();
-    if (!billNo) fail(400, 'Enter a bill number');
+    const billNo = String((await readBody(req)).bill_no || '').trim().toUpperCase();
+    if (!BILL_NO.test(billNo)) fail(400, 'Bill number must be T or R and 6 digits, like T050810');
+    startingBill(u);
     if (db.prepare('SELECT 1 FROM bills WHERE bill_no = ?').get(billNo)) fail(400, `Bill ${billNo} already exists`);
     const t = now();
     const { lastInsertRowid } = db.prepare('INSERT INTO bills (bill_no, created_at, created_by) VALUES (?, ?, ?)').run(billNo, t, u.id);
@@ -272,6 +283,7 @@ const routes = {
     if (action === 'start') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
       if (e && e.start_at) fail(400, `Already started by ${e.start_by_name}`);
+      startingBill(u);
       db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by) VALUES (?, ?, ?, ?)').run(bill.id, task.code, t, u.id);
     } else if (action === 'end') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
@@ -288,12 +300,14 @@ const routes = {
   'GET /api/work': async (req, res, u) => {
     const rows = db.prepare(`SELECT e.*, t.name AS task_name FROM entries e JOIN tasks t ON t.code = e.task_code
       WHERE e.bill_id IS NULL AND e.start_by = ? ORDER BY e.id DESC LIMIT 30`).all(u.id);
-    send(res, 200, rows);
+    send(res, 200, { rows, busy: busyBill(u) });
   },
   'POST /api/work': async (req, res, u) => {
     const { action, task_code, id, note } = await readBody(req);
     if (action === 'start') {
       if (!db.prepare('SELECT 1 FROM tasks WHERE code = ? AND stage_order IS NULL').get(task_code)) fail(400, 'Unknown task');
+      const busy = busyBill(u);
+      if (busy) fail(400, `Finish bill ${busy.bill_no} first`);
       const t = now();
       // Starting a new task ends whatever this person was doing before.
       db.prepare('UPDATE entries SET end_at = ?, end_by = ? WHERE bill_id IS NULL AND start_by = ? AND end_at IS NULL').run(t, u.id, u.id);
