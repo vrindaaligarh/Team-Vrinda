@@ -182,6 +182,11 @@ migrate('2026-10-24-pr-ch-for-all-staff', () => {
     db.prepare('UPDATE users SET tasks = ? WHERE id = ?').run(list.join(','), u.id);
   }
 });
+migrate('2026-10-24-add-rayyan', () => {
+  if (!db.prepare("SELECT 1 FROM users WHERE username = 'rayyan'").get()) {
+    db.prepare("INSERT INTO users (username, name, pass_hash, is_admin, tasks) VALUES ('rayyan', 'RAYYAN', ?, 0, 'PR,CH')").run(hashPassword('1234'));
+  }
+});
 migrate('2026-10-24-work-code-u-supply', () => {
   db.prepare(`INSERT INTO tasks (code, name, kind) VALUES ('U', 'Supply', 'startend') ON CONFLICT(code) DO UPDATE SET name = excluded.name`).run();
 });
