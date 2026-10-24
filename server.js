@@ -441,6 +441,13 @@ const routes = {
       JOIN tasks t ON t.code = e.task_code LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users vu ON vu.id = e.verified_by
       WHERE ${where.join(' AND ')} ORDER BY e.id DESC LIMIT 500`).all(...params));
   },
+  // Owner deletes a wrong work-task entry from the Task Log (bill steps use reset-stage instead).
+  'POST /api/admin/delete-entry': async (req, res) => {
+    const { id } = await readBody(req);
+    const r = db.prepare('DELETE FROM entries WHERE id = ? AND bill_id IS NULL').run(id);
+    if (!r.changes) fail(404, 'Task not found');
+    send(res, 200, { ok: true });
+  },
   // Undo a stage on a bill (for mistakes). Also clears every later stage.
   'POST /api/admin/reset-stage': async (req, res) => {
     const { bill_id, task_code } = await readBody(req);

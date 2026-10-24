@@ -91,6 +91,7 @@
   .billsearch { width: 100%; margin-bottom: 4px; }
   .bill[hidden] { display: none; }
   .stage-panel { border: 2px solid var(--primary); }
+  button.btn.del { color: var(--red); border-color: var(--red); }
   .card.fix { border-color: var(--red); background: var(--red-bg); }
 </style>
 </head>
@@ -378,13 +379,15 @@ async function viewTaskLog(m) {
     <div class="card scroll"><table><tr><th>Employee</th><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Count</th><th>Verify</th><th></th></tr>
     ${rows.map((r) => `<tr><td>${esc(r.start_by_name)}</td><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : `<span class="pill amber">Running ${ago(r.start_at)}</span>`}</td><td>${dur(r.start_at, r.end_at)}</td><td>${countCell(r)}</td>
       <td>${!r.end_at ? '' : r.verified_at ? `<span class="pill green">Verified</span><small>${esc(r.verified_by_name)} ${fmtTime(r.verified_at)} <a href="#" data-unverify="${r.id}">undo</a></small>` : `<button class="btn green small" data-verify="${r.id}">Verify</button>`}</td>
-      <td><button class="btn ghost small" data-fix="${r.id}" data-who="${esc(r.start_by_name)}">Ask to fix</button></td></tr>`).join('') || '<tr><td colspan="8" class="empty">Nothing logged.</td></tr>'}
+      <td><div class="row" style="flex-wrap:nowrap"><button class="btn ghost small" data-fix="${r.id}" data-who="${esc(r.start_by_name)}">Ask to fix</button>${state.me.is_admin ? `<button class="btn ghost small del" data-del="${r.id}" data-what="${esc(r.start_by_name)} · ${r.task_code} ${esc(r.task_name)} · ${fmtFull(r.start_at)}">Delete</button>` : ''}</div></td></tr>`).join('') || '<tr><td colspan="8" class="empty">Nothing logged.</td></tr>'}
     </table></div>`;
   $('#fv').onchange = (e) => { filters.verify = e.target.checked; loadTab(); };
   m.onclick = (e) => {
     const fx = e.target.closest('button[data-fix]'); if (fx) return askFix(fx);
     const v = e.target.closest('button[data-verify]'); if (v) return act(v, () => api('POST', '/api/verify', { id: +v.dataset.verify }), 'Verified');
     const uv = e.target.closest('a[data-unverify]'); if (uv) { e.preventDefault(); return act(null, () => api('POST', '/api/verify', { id: +uv.dataset.unverify, undo: true }), 'Verification removed'); }
+    const d = e.target.closest('button[data-del]');
+    if (d && confirm(`Delete this task?\n${d.dataset.what}\nThis cannot be undone.`)) return act(d, () => api('POST', '/api/admin/delete-entry', { id: +d.dataset.del }), 'Task deleted');
   };
   $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
   $('#fall').onclick = () => { filters.day = ''; loadTab(); };
