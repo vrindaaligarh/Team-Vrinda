@@ -171,6 +171,17 @@ migrate('2026-10-24-managers-and-fix-requests', () => {
   );`);
   db.prepare("UPDATE users SET is_manager = 1 WHERE username = 'arun'").run();
 });
+// Everyone except computer operators, HIMANSHU, ROCKY, IRFAN and TALHA can prepare and check bills.
+migrate('2026-10-24-pr-ch-for-all-staff', () => {
+  const skip = new Set(['afzal', 'bhakti', 'diya', 'mansi', 'neha', 'pooja', 'riya', 'rizwan', 'siya', 'shebi', 'suman', 'yash',
+    'himanshu', 'rocky', 'irfan', 'talha']);
+  for (const u of db.prepare('SELECT id, username, tasks FROM users WHERE is_admin = 0 AND active = 1').all()) {
+    if (skip.has(u.username)) continue;
+    const list = u.tasks.split(',').map((x) => x.trim()).filter(Boolean);
+    for (const code of ['PR', 'CH']) if (!list.includes(code)) list.push(code);
+    db.prepare('UPDATE users SET tasks = ? WHERE id = ?').run(list.join(','), u.id);
+  }
+});
 migrate('2026-10-24-work-code-u-supply', () => {
   db.prepare(`INSERT INTO tasks (code, name, kind) VALUES ('U', 'Supply', 'startend') ON CONFLICT(code) DO UPDATE SET name = excluded.name`).run();
 });
