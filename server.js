@@ -396,7 +396,7 @@ const routes = {
       const prev = st[st.indexOf(t) - 1];
       // Bills still at the previous step, shown greyed so people know what's coming.
       const coming = prev ? open.filter((b) => b.current === prev.code).reverse()
-        .map((b) => ({ id: b.id, bill_no: b.bill_no, items: b.items, current: b.current, by: (b.stages[prev.code] || {}).start_by_name || null })) : [];
+        .map((b) => ({ id: b.id, bill_no: b.bill_no, items: b.items, current: b.current, by: (b.stages[prev.code] || {}).start_by_name || null, since: (b.stages[prev.code] || {}).start_at || null })) : [];
       // For the first step: bills this person finished in the last 12 hours, with where they are now.
       const done = prev ? [] : billRows(`WHERE b.id IN (SELECT bill_id FROM entries WHERE task_code = ? AND end_by = ? AND end_at >= ?)`,
         [t.code, u.id, new Date(Date.now() - 12 * 3600e3).toISOString()]).slice(0, 40).map((b) => ({ bill_no: b.bill_no, current: b.current, end_at: b.stages[t.code].end_at }));

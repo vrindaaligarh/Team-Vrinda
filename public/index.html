@@ -51,6 +51,7 @@
   .pill.green { background: var(--green-bg); color: var(--green); }
   .pill.amber { background: var(--amber-bg); color: var(--amber); }
   .pill.gray { background: var(--bg); color: var(--muted); }
+  .pill.red { background: var(--red-bg); color: var(--red); }
   .empty { color: var(--muted); padding: 8px 0; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
@@ -278,12 +279,12 @@ function stageCard(task, bills, allStages, busy, coming = [], doneList = [], par
         <select id="partner" style="width:100%"><option value="">Only me</option>${partners.map((x) => `<option value="${x.id}" ${x.id === state.partner ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : ''}
         <p class="sub" style="margin:12px 0 6px"><b>Ready for ${esc(task.name)}</b> · tap a bill number to start</p>
         ${ready.length ? `<div class="chips">${ready.map((b) => {
-          const sub = `<small>${b.items ? b.items + ' items · ' : ''}${esc(p(b).end_by_name || '')} · ${fmtTime(p(b).end_at)}</small>`;
+          const sub = `<small>${b.items ? b.items + ' items · ' : ''}${esc(p(b).end_by_name || '')} · ${fmtTime(p(b).end_at)}</small>${waitTag(p(b).end_at, 'waiting')}`;
           const tools = billTools(b);
           if (!tools) return `<button class="chip" data-no="${esc(b.bill_no)}" ${busy ? 'disabled' : `data-a="start" data-b="${b.id}" data-t="${task.code}"`}>${esc(b.bill_no)}${sub}</button>`;
           return `<div class="chip tools" data-no="${esc(b.bill_no)}">${esc(b.bill_no)}${sub}<div class="row">${busy || ownerView ? '' : `<button class="btn small" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`}${tools}</div></div>`;
         }).join('')}</div>` : '<p class="empty">No prepared bills waiting.</p>'}
-        ${coming.length ? `<p class="sub" style="margin:12px 0 6px">Still being prepared</p><div class="chips">${coming.map((c) => `<span class="chip off${billTools(c) ? ' tools' : ''}" data-no="${esc(c.bill_no)}">${esc(c.bill_no)}<small>${c.items ? c.items + ' items · ' : ''}${esc(c.by || '')}</small>${billTools(c) ? `<div class="row">${billTools(c)}</div>` : ''}</span>`).join('')}</div>` : ''}
+        ${coming.length ? `<p class="sub" style="margin:12px 0 6px">Still being prepared</p><div class="chips">${coming.map((c) => `<span class="chip off${billTools(c) ? ' tools' : ''}" data-no="${esc(c.bill_no)}">${esc(c.bill_no)}<small>${c.items ? c.items + ' items · ' : ''}${esc(c.by || '')}</small>${waitTag(c.since, 'preparing')}${billTools(c) ? `<div class="row">${billTools(c)}</div>` : ''}</span>`).join('')}</div>` : ''}
         ${rows ? `<p class="sub" style="margin:14px 0 0"><b>Being checked now</b></p>${rows}` : ''}`;
     })() : rows || `<p class="empty">${isFirst ? 'No bill in progress.' : 'Nothing waiting right now.'}</p>`}
     ${isFirst && doneList.length ? `<p class="sub" style="margin:14px 0 6px"><b>My finished bills</b> · last 12 hours</p><div class="chips">${doneList.map((d) => `<span class="chip off" style="border-style:solid" data-no="${esc(d.bill_no)}">${esc(d.bill_no)}<small>Done ${fmtTime(d.end_at)} · ${d.current === 'DONE' ? 'Final ready' : 'now at ' + esc(d.current)}</small></span>`).join('')}</div>` : ''}
@@ -523,6 +524,8 @@ document.addEventListener('click', (e) => { const b = e.target.closest('button[d
 const canEditBills = () => state.me.is_admin || state.me.is_manager || state.me.can_proxy;
 // Edit + All done for owners, manager and the desk staff, shown on bills in the step lists.
 const billTools = (b) => `${canEditBills() ? editBtn(b.id, b.bill_no, b.items) : ''}${allDoneBtn(b)}`;
+// Time since a moment, as a small pill: amber after 15 minutes, red after 30.
+const waitTag = (iso, label) => { if (!iso) return ''; const min = (Date.now() - Date.parse(iso)) / 60000; return `<span class="pill ${min >= 30 ? 'red' : min >= 15 ? 'amber' : 'gray'}" style="margin-top:4px;font-size:11px">${label} ${ago(iso)}</span>`; };
 const itemsTag = (b) => b.items ? `<small class="items">${b.items} items</small>` : '';
 const countCell = (r) => r.count_label ? (r.qty != null ? `<b>${r.qty}</b> ${esc(r.count_label)}` : '') : '';
 
