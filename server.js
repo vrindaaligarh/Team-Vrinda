@@ -223,6 +223,12 @@ migrate('2026-10-25-owais-no-checking-packing', () => {
 migrate('2026-10-25-bill-items', () => {
   db.exec('ALTER TABLE bills ADD COLUMN items INTEGER');
 });
+// Owners, MANSI and AFZAL can enter work for an employee who forgot their phone; entries.entered_by records who pressed it.
+migrate('2026-10-25-enter-for-staff', () => {
+  db.exec('ALTER TABLE users ADD COLUMN can_proxy INTEGER NOT NULL DEFAULT 0');
+  db.exec('ALTER TABLE entries ADD COLUMN entered_by INTEGER REFERENCES users(id)');
+  db.prepare("UPDATE users SET can_proxy = 1 WHERE is_admin = 1 OR username IN ('mansi', 'afzal')").run();
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
@@ -274,7 +280,7 @@ function endOpenWork(u, qty, id) {
     n = Number(qty);
     if (qty === undefined || qty === null || qty === '' || !Number.isInteger(n) || n < 0) fail(400, `Enter how many ${e.count_label}`);
   }
-  db.prepare('UPDATE entries SET end_at = ?, end_by = ?, qty = ? WHERE id = ?').run(now(), u.id, n, e.id);
+  db.prepare('UPDATE entries SET end_at = ?, end_by = ?, qty = ?, entered_by = COALESCE(?, entered_by) WHERE id = ?').run(now(), u.id, n, u.entered_by ?? null, e.id);
   return true;
 }
 function startingBill(u, prevQty, code) {
@@ -289,7 +295,7 @@ function startingBill(u, prevQty, code) {
 const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Exactly 5 digits: below 50000 is an R bill (12345 -> R012345), 50000 and up a T bill (50810 -> T050810).
 const padBillNo = (no) => no.replace(/^(\d{5})$/, (m, d) => (Number(d) < 50000 ? 'R0' : 'T0') + d).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
-const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), active: !!u.active });
+const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
 function billRows(where = '', params = []) {
@@ -297,8 +303,8 @@ function billRows(where = '', params = []) {
   if (!bills.length) return [];
   const ids = bills.map((b) => b.id);
   const entries = db.prepare(`
-    SELECT e.*, su.name AS start_by_name, eu.name AS end_by_name, vu.name AS verified_by_name FROM entries e
-    LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users eu ON eu.id = e.end_by LEFT JOIN users vu ON vu.id = e.verified_by
+    SELECT e.*, su.name AS start_by_name, eu.name AS end_by_name, vu.name AS verified_by_name, pu.name AS entered_by_name FROM entries e
+    LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users eu ON eu.id = e.end_by LEFT JOIN users vu ON vu.id = e.verified_by LEFT JOIN users pu ON pu.id = e.entered_by
     WHERE e.bill_id IN (${ids.map(() => '?').join(',')})`).all(...ids);
   const byBill = {};
   for (const e of entries) (byBill[e.bill_id] ||= {})[e.task_code] = e;
@@ -383,7 +389,7 @@ const routes = {
     startingBill(u, body.prev_qty, first.code);
     const t = now();
     const { lastInsertRowid } = db.prepare('INSERT INTO bills (bill_no, items, created_at, created_by) VALUES (?, ?, ?, ?)').run(billNo, items, t, u.id);
-    db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by) VALUES (?, ?, ?, ?)').run(lastInsertRowid, first.code, t, u.id);
+    db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by, entered_by) VALUES (?, ?, ?, ?, ?)').run(lastInsertRowid, first.code, t, u.id, u.entered_by ?? null);
     send(res, 200, { ok: true });
   },
   // Fix a wrongly typed bill no. or item count: the person who started Preparing (until Checking starts), or an owner/manager any time.
@@ -404,6 +410,11 @@ const routes = {
     db.prepare('UPDATE bills SET bill_no = ?, items = ? WHERE id = ?').run(billNo, items, bill.id);
     send(res, 200, { ok: true, bill_no: billNo });
   },
+  // Employees that can be picked under "Enter for staff".
+  'GET /api/proxy-staff': async (req, res, u) => {
+    if (!u.can_proxy) fail(403, 'Not allowed');
+    send(res, 200, db.prepare('SELECT id, name FROM users WHERE active = 1 AND is_admin = 0 ORDER BY name').all());
+  },
   // Press a button on a bill: action = start | end | done (single timestamp).
   'POST /api/stage': async (req, res, u) => {
     const { bill_id, task_code, action, prev_qty } = await readBody(req);
@@ -419,15 +430,15 @@ const routes = {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
       if (e && e.start_at) fail(400, `Already started by ${e.start_by_name}`);
       startingBill(u, prev_qty, task.code);
-      db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by) VALUES (?, ?, ?, ?)').run(bill.id, task.code, t, u.id);
+      db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by, entered_by) VALUES (?, ?, ?, ?, ?)').run(bill.id, task.code, t, u.id, u.entered_by ?? null);
     } else if (action === 'end') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
       if (!e || !e.start_at) fail(400, 'Press Start first');
       if (task.code === stages()[0].code && e.start_by !== u.id && !u.is_admin) fail(403, `Only ${e.start_by_name} can end this bill`);
-      db.prepare('UPDATE entries SET end_at = ?, end_by = ? WHERE id = ?').run(t, u.id, e.id);
+      db.prepare('UPDATE entries SET end_at = ?, end_by = ?, entered_by = COALESCE(?, entered_by) WHERE id = ?').run(t, u.id, u.entered_by ?? null, e.id);
     } else if (action === 'done') {
       if (task.kind !== 'single') fail(400, 'This stage needs Start and End');
-      db.prepare('INSERT INTO entries (bill_id, task_code, end_at, end_by) VALUES (?, ?, ?, ?)').run(bill.id, task.code, t, u.id);
+      db.prepare('INSERT INTO entries (bill_id, task_code, end_at, end_by, entered_by) VALUES (?, ?, ?, ?, ?)').run(bill.id, task.code, t, u.id, u.entered_by ?? null);
     } else fail(400, 'Unknown action');
     send(res, 200, { ok: true });
   },
@@ -447,7 +458,7 @@ const routes = {
       if (busy) fail(400, `Finish bill ${busy.bill_no} first`);
       // Starting a new task ends whatever this person was doing before.
       endOpenWork(u, prev_qty);
-      db.prepare('INSERT INTO entries (task_code, start_at, start_by, note) VALUES (?, ?, ?, ?)').run(task_code, now(), u.id, String(note || ''));
+      db.prepare('INSERT INTO entries (task_code, start_at, start_by, note, entered_by) VALUES (?, ?, ?, ?, ?)').run(task_code, now(), u.id, String(note || ''), u.entered_by ?? null);
     } else if (action === 'end') {
       if (!endOpenWork(u, qty, id)) fail(400, 'Nothing to end');
     } else fail(400, 'Unknown action');
@@ -515,8 +526,8 @@ const routes = {
     if (q.get('from')) { where.push('e.start_at >= ?'); params.push(q.get('from')); }
     if (q.get('to')) { where.push('e.start_at < ?'); params.push(q.get('to')); }
     if (q.get('verify')) where.push('e.end_at IS NOT NULL AND e.verified_at IS NULL');
-    send(res, 200, db.prepare(`SELECT e.*, t.name AS task_name, t.count_label, su.name AS start_by_name, vu.name AS verified_by_name FROM entries e
-      JOIN tasks t ON t.code = e.task_code LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users vu ON vu.id = e.verified_by
+    send(res, 200, db.prepare(`SELECT e.*, t.name AS task_name, t.count_label, su.name AS start_by_name, vu.name AS verified_by_name, pu.name AS entered_by_name FROM entries e
+      JOIN tasks t ON t.code = e.task_code LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users vu ON vu.id = e.verified_by LEFT JOIN users pu ON pu.id = e.entered_by
       WHERE ${where.join(' AND ')} ORDER BY e.id DESC LIMIT 500`).all(...params));
   },
   // Who has (and hasn't) logged any job in the chosen period. Owners/managers only.
@@ -593,6 +604,15 @@ const server = http.createServer(async (req, res) => {
         if (!u) fail(401, 'Please log in');
         const reviewPaths = ['/api/admin/bills', '/api/admin/work', '/api/admin/staff-status'];
         if (url.pathname.startsWith('/api/admin/') && !u.is_admin && !(u.is_manager && req.method === 'GET' && reviewPaths.includes(url.pathname))) fail(403, 'Owner only');
+      }
+      // "Enter for staff": work buttons pressed on someone else's behalf.
+      const forId = Number(req.headers['x-for-user'] || 0);
+      const proxyPaths = ['/api/me', '/api/queue', '/api/bills', '/api/stage', '/api/work', '/api/bills/edit'];
+      if (forId && u && proxyPaths.includes(url.pathname)) {
+        if (!u.can_proxy) fail(403, 'Not allowed to enter work for others');
+        const t = db.prepare('SELECT * FROM users WHERE id = ? AND active = 1').get(forId);
+        if (!t) fail(404, 'Employee not found');
+        return await handler(req, res, { ...t, entered_by: u.id }, url.searchParams);
       }
       return await handler(req, res, u, url.searchParams);
     }
