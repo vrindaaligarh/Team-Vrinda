@@ -242,9 +242,11 @@ function currentUser(req) {
   return u;
 }
 // The bill this person has started (preparing or checking) but not finished yet, if any.
-const busyBill = (u) => db.prepare(`SELECT b.id AS bill_id, b.bill_no, e.task_code, e.start_at, t.name AS task_name FROM entries e
+// Bills this person has started but not finished (several are allowed while preparing).
+const busyBills = (u) => db.prepare(`SELECT b.id AS bill_id, b.bill_no, e.task_code, e.start_at, t.name AS task_name FROM entries e
   JOIN bills b ON b.id = e.bill_id JOIN tasks t ON t.code = e.task_code
-  WHERE e.start_by = ? AND e.start_at IS NOT NULL AND e.end_at IS NULL LIMIT 1`).get(u.id) || null;
+  WHERE e.start_by = ? AND e.start_at IS NOT NULL AND e.end_at IS NULL ORDER BY e.id`).all(u.id);
+const busyBill = (u) => busyBills(u)[0] || null;
 // Ends the person's running work task. Tasks with a count (racks, syrup cases) need it first.
 function endOpenWork(u, qty, id) {
   const e = db.prepare(`SELECT e.id, t.count_label FROM entries e JOIN tasks t ON t.code = e.task_code
@@ -258,16 +260,18 @@ function endOpenWork(u, qty, id) {
   db.prepare('UPDATE entries SET end_at = ?, end_by = ?, qty = ? WHERE id = ?').run(now(), u.id, n, e.id);
   return true;
 }
-function startingBill(u, prevQty) {
-  const busy = busyBill(u);
+function startingBill(u, prevQty, code) {
+  // Preparers may prepare several bills at once; any other bill step needs everything else finished first.
+  const first = stages()[0].code;
+  const busy = busyBills(u).find((b) => !(code === first && b.task_code === first));
   if (busy) fail(400, `Finish bill ${busy.bill_no} first`);
   // Starting a bill ends any work task the person had running.
   endOpenWork(u, prevQty);
 }
 // Bill: T or R + 6 digits (T050810). Challan: 2 letters + 6 digits (CA007536).
 const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
-// Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810.
-const padBillNo = (no) => no.replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
+// Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Digits only means a T bill: 50810 -> T050810.
+const padBillNo = (no) => no.replace(/^(\d{1,6})$/, 'T$1').replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
 const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
@@ -342,7 +346,7 @@ const routes = {
     const billNo = padBillNo(String(body.bill_no || '').trim().toUpperCase());
     if (!BILL_NO.test(billNo)) fail(400, 'Use a bill no. like T050810 or a challan no. like CA007536');
     if (db.prepare('SELECT 1 FROM bills WHERE bill_no = ?').get(billNo)) fail(400, `Bill ${billNo} already exists`);
-    startingBill(u, body.prev_qty);
+    startingBill(u, body.prev_qty, first.code);
     const t = now();
     const { lastInsertRowid } = db.prepare('INSERT INTO bills (bill_no, created_at, created_by) VALUES (?, ?, ?)').run(billNo, t, u.id);
     db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by) VALUES (?, ?, ?, ?)').run(lastInsertRowid, first.code, t, u.id);
@@ -362,7 +366,7 @@ const routes = {
     if (action === 'start') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
       if (e && e.start_at) fail(400, `Already started by ${e.start_by_name}`);
-      startingBill(u, prev_qty);
+      startingBill(u, prev_qty, task.code);
       db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by) VALUES (?, ?, ?, ?)').run(bill.id, task.code, t, u.id);
     } else if (action === 'end') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
@@ -379,7 +383,7 @@ const routes = {
   'GET /api/work': async (req, res, u) => {
     const rows = db.prepare(`SELECT e.*, t.name AS task_name, t.count_label FROM entries e JOIN tasks t ON t.code = e.task_code
       WHERE e.bill_id IS NULL AND e.start_by = ? ORDER BY e.id DESC LIMIT 30`).all(u.id);
-    send(res, 200, { rows, busy: busyBill(u) });
+    send(res, 200, { rows, busy: busyBill(u), busyAll: busyBills(u) });
   },
   'POST /api/work': async (req, res, u) => {
     const { action, task_code, id, note, qty, prev_qty } = await readBody(req);

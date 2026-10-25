@@ -192,7 +192,7 @@ async function loadTab() {
 }
 
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810.
-const padBillNo = (no) => no.replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
+const padBillNo = (no) => no.replace(/^(\d{1,6})$/, 'T$1').replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
 
 // Tasks like L Rack Setting and O Syrup Cases need a count when they end. Returns the number, or null if cancelled.
 function askQty(label) {
@@ -228,8 +228,8 @@ function stageCard(task, bills, allStages, busy, coming = []) {
   }).join('');
   return `<section class="card stage-panel">
     <h2><span class="code">${task.code}</span>${esc(task.name)}</h2>
-    <p class="sub">${task.kind === 'single' ? 'Find the bill and tap the button. It records the current time.' : isFirst ? 'Type the bill number and press Start. Press End when you finish.' : 'Find the bill, press Start when you begin and End when you finish.'}</p>
-    ${isFirst ? `<form class="row newbill" style="margin-bottom:8px"><input name="no" class="grow billno" placeholder="Bill T050810 or challan CA007536" maxlength="8" autocapitalize="characters" autocomplete="off" required><button class="btn">Start</button></form>`
+    <p class="sub">${task.kind === 'single' ? 'Find the bill and tap the button. It records the current time.' : isFirst ? 'Type the last digits of the bill (50810 becomes T050810) and press Start. You can prepare several bills at once; press End on each when done.' : 'Find the bill, press Start when you begin and End when you finish.'}</p>
+    ${isFirst ? `<form class="row newbill" style="margin-bottom:8px"><input name="no" class="grow billno"  placeholder="e.g. 50810 or CA7536" maxlength="8" autocapitalize="characters" autocomplete="off" required><button class="btn">Start</button></form>`
       : `<input id="billsearch" class="billsearch" placeholder="Find bill or challan no." value="${esc(filters.queue || '')}" autocapitalize="characters" autocomplete="off">`}
     ${pick ? (() => {
       const ready = bills.filter((b) => !(b.stages[task.code] && b.stages[task.code].start_at));
@@ -242,7 +242,7 @@ function stageCard(task, bills, allStages, busy, coming = []) {
   </section>`;
 }
 async function viewOther(m) {
-  const [{ rows, busy }, queues] = await Promise.all([api('GET', '/api/work'), state.me.tasks.length || state.me.is_admin ? api('GET', '/api/queue') : []]);
+  const [{ rows, busy, busyAll = [] }, queues] = await Promise.all([api('GET', '/api/work'), state.me.tasks.length || state.me.is_admin ? api('GET', '/api/queue') : []]);
   const allStages = state.tasks.filter((t) => t.stage_order != null);
   const running = rows.find((r) => !r.end_at);
   // Ending the running task (by starting something else) needs its count first.
@@ -250,14 +250,14 @@ async function viewOther(m) {
   if (state.openStage && !queues.some((q) => q.task.code === state.openStage)) state.openStage = null;
   const open = queues.find((q) => q.task.code === state.openStage);
   const now = busy
-    ? `<section class="card now"><div class="row"><span class="code">${busy.task_code}</span><div class="grow"><b>${esc(busy.task_name)} · Bill ${esc(busy.bill_no)}</b><div class="sub" style="margin:0">Started ${fmtTime(busy.start_at)} · ${ago(busy.start_at)}</div></div><button class="btn amber" data-a="end" data-b="${busy.bill_id}" data-t="${busy.task_code}">End</button></div></section>`
+    ? busyAll.map((x) => `<section class="card now"><div class="row"><span class="code">${x.task_code}</span><div class="grow"><b>${esc(x.task_name)} · Bill ${esc(x.bill_no)}</b><div class="sub" style="margin:0">Started ${fmtTime(x.start_at)} · ${ago(x.start_at)}</div></div><button class="btn amber" data-a="end" data-b="${x.bill_id}" data-t="${x.task_code}">End</button></div></section>`).join('')
     : running ? `<section class="card now"><div class="row"><span class="code">${running.task_code}</span><div class="grow"><b>${esc(running.task_name)}</b><div class="sub" style="margin:0">Started ${fmtTime(running.start_at)} · ${ago(running.start_at)}</div></div><button class="btn amber" data-id="${running.id}">End</button></div></section>` : '';
   const billTiles = queues.map(({ task, bills }) => `<button class="task-tile bill-tile${state.openStage === task.code ? ' on' : ''}" data-stage="${task.code}"><span class="code">${task.code}</span><span class="grow">${esc(task.name)}</span>${bills.length ? `<span class="count">${bills.length}</span>` : ''}</button>`).join('');
   const tiles = state.tasks.filter((t) => t.stage_order == null).map((t) => `<button class="task-tile${running && running.task_code === t.code ? ' on' : ''}" data-code="${t.code}" ${running && running.task_code === t.code ? 'disabled' : ''}><span class="code">${t.code}</span><span>${esc(t.name)}</span></button>`).join('');
   m.innerHTML = `${now}
     ${queues.length ? `<section class="card"><h2>Bill work</h2><p class="sub">Tap your bill step.</p><div class="task-grid">${billTiles}</div></section>${open ? stageCard(open.task, open.bills, allStages, busy, open.coming) : ''}` : ''}
     <section class="card"><h2>${queues.length ? 'Other work' : 'What are you doing now?'}</h2><p class="sub">Tap a task to start it. Tapping another task ends the current one.</p>
-    ${busy ? `<p class="pill amber" style="margin-bottom:10px">Finish bill ${esc(busy.bill_no)} first</p>` : ''}<div class="task-grid"${busy ? ' style="opacity:.45;pointer-events:none"' : ''}>${tiles}</div></section>
+    ${busy ? `<p class="pill amber" style="margin-bottom:10px">Finish ${busyAll.length > 1 ? 'your ' + busyAll.length + ' bills' : 'bill ' + esc(busy.bill_no)} first</p>` : ''}<div class="task-grid"${busy ? ' style="opacity:.45;pointer-events:none"' : ''}>${tiles}</div></section>
     <section class="card"><h2>My recent tasks</h2>${rows.length ? `<div class="scroll"><table><tr><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Count</th></tr>
     ${rows.map((r) => `<tr><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : '<span class="pill amber">Running</span>'}</td><td>${dur(r.start_at, r.end_at)}</td><td>${countCell(r)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No tasks yet.</p>'}</section>`;
   m.querySelectorAll('form.newbill').forEach((f) => f.onsubmit = (e) => {
