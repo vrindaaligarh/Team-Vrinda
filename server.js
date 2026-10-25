@@ -213,6 +213,12 @@ migrate('2026-10-24-work-code-u-supply', () => {
 migrate('2026-10-25-basement-setting-racks', () => {
   db.prepare("UPDATE tasks SET count_label = 'racks' WHERE code = 'D'").run();
 });
+// users.blocked: work-task codes a person may not start (e.g. OWAIS cannot do I Polythene Packing, which also keeps him off the packing list).
+migrate('2026-10-25-owais-no-checking-packing', () => {
+  db.exec("ALTER TABLE users ADD COLUMN blocked TEXT NOT NULL DEFAULT ''");
+  const o = db.prepare("SELECT id, tasks FROM users WHERE username = 'owais'").get();
+  if (o) db.prepare("UPDATE users SET tasks = ?, blocked = 'I' WHERE id = ?").run(o.tasks.split(',').filter((c) => c && c !== 'CH' && c !== 'PK').join(','), o.id);
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
@@ -279,7 +285,7 @@ function startingBill(u, prevQty, code) {
 const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Exactly 5 digits: below 50000 is an R bill (12345 -> R012345), 50000 and up a T bill (50810 -> T050810).
 const padBillNo = (no) => no.replace(/^(\d{5})$/, (m, d) => (Number(d) < 50000 ? 'R0' : 'T0') + d).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
-const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), active: !!u.active });
+const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
 function billRows(where = '', params = []) {
@@ -412,6 +418,7 @@ const routes = {
     const { action, task_code, id, note, qty, prev_qty } = await readBody(req);
     if (action === 'start') {
       if (!db.prepare('SELECT 1 FROM tasks WHERE code = ? AND stage_order IS NULL').get(task_code)) fail(400, 'Unknown task');
+      if ((u.blocked || '').split(',').includes(task_code)) fail(403, 'This task is not in your login');
       const busy = busyBill(u);
       if (busy) fail(400, `Finish bill ${busy.bill_no} first`);
       // Starting a new task ends whatever this person was doing before.
