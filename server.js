@@ -326,7 +326,11 @@ const routes = {
     const out = [];
     for (const t of st) {
       if (!canDo(u, t.code)) continue;
-      out.push({ task: t, bills: open.filter((b) => b.current === t.code).reverse() });
+      const prev = st[st.indexOf(t) - 1];
+      // Bills still at the previous step, shown greyed so people know what's coming.
+      const coming = prev ? open.filter((b) => b.current === prev.code).reverse()
+        .map((b) => ({ bill_no: b.bill_no, by: (b.stages[prev.code] || {}).start_by_name || null })) : [];
+      out.push({ task: t, bills: open.filter((b) => b.current === t.code).reverse(), coming });
     }
     send(res, 200, out);
   },

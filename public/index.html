@@ -89,7 +89,12 @@
   .bill-tile.on .code { background: var(--primary-text); color: var(--primary); }
   .count { background: var(--red); color: #fff; border-radius: 99px; min-width: 24px; height: 24px; display: inline-grid; place-items: center; font-size: 13px; padding: 0 6px; }
   .billsearch { width: 100%; margin-bottom: 4px; }
-  .bill[hidden] { display: none; }
+  .bill[hidden], .chip[hidden] { display: none; }
+  .chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+  .chip { display: flex; flex-direction: column; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 2px solid var(--primary); background: var(--card); color: var(--text); font: inherit; font-size: 17px; font-weight: 700; cursor: pointer; }
+  .chip small { font-size: 11px; font-weight: 500; color: var(--muted); margin-top: 2px; }
+  .chip:disabled { opacity: .45; cursor: default; }
+  .chip.off { border: 1px dashed var(--line); color: var(--muted); font-weight: 600; cursor: default; }
   .stage-panel { border: 2px solid var(--primary); }
   button.btn.del { color: var(--red); border-color: var(--red); }
   .card.fix { border-color: var(--red); background: var(--red-bg); }
@@ -200,10 +205,12 @@ function askQty(label) {
 }
 
 // ---------- Work screen: bill steps + work tasks A-U ----------
-function stageCard(task, bills, allStages, busy) {
+function stageCard(task, bills, allStages, busy, coming = []) {
   const isFirst = task.stage_order === allStages[0].stage_order;
   const prev = allStages[allStages.findIndex((t) => t.code === task.code) - 1];
-  const rows = bills.map((b) => {
+  // Checking-type steps: started bills as rows with End, waiting bills as plain bill-number buttons.
+  const pick = task.kind === 'startend' && !isFirst;
+  const rows = bills.filter((b) => !pick || (b.stages[task.code] && b.stages[task.code].start_at)).map((b) => {
     const e = b.stages[task.code];
     const p = prev && b.stages[prev.code];
     let info, btn;
@@ -224,7 +231,14 @@ function stageCard(task, bills, allStages, busy) {
     <p class="sub">${task.kind === 'single' ? 'Find the bill and tap the button. It records the current time.' : isFirst ? 'Type the bill number and press Start. Press End when you finish.' : 'Find the bill, press Start when you begin and End when you finish.'}</p>
     ${isFirst ? `<form class="row newbill" style="margin-bottom:8px"><input name="no" class="grow billno" placeholder="Bill T050810 or challan CA007536" maxlength="8" autocapitalize="characters" autocomplete="off" required><button class="btn">Start</button></form>`
       : `<input id="billsearch" class="billsearch" placeholder="Find bill or challan no." value="${esc(filters.queue || '')}" autocapitalize="characters" autocomplete="off">`}
-    ${rows || `<p class="empty">${isFirst ? 'No bill in progress.' : 'Nothing waiting right now.'}</p>`}
+    ${pick ? (() => {
+      const ready = bills.filter((b) => !(b.stages[task.code] && b.stages[task.code].start_at));
+      const p = prev && ((b) => b.stages[prev.code] || {});
+      return `<p class="sub" style="margin:12px 0 6px"><b>Ready for ${esc(task.name)}</b> · tap a bill number to start</p>
+        ${ready.length ? `<div class="chips">${ready.map((b) => `<button class="chip" data-no="${esc(b.bill_no)}" ${busy ? 'disabled' : `data-a="start" data-b="${b.id}" data-t="${task.code}"`}>${esc(b.bill_no)}<small>${esc(p(b).end_by_name || '')} · ${fmtTime(p(b).end_at)}</small></button>`).join('')}</div>` : '<p class="empty">No prepared bills waiting.</p>'}
+        ${coming.length ? `<p class="sub" style="margin:12px 0 6px">Still being prepared</p><div class="chips">${coming.map((c) => `<span class="chip off" data-no="${esc(c.bill_no)}">${esc(c.bill_no)}<small>${esc(c.by || '')}</small></span>`).join('')}</div>` : ''}
+        ${rows ? `<p class="sub" style="margin:14px 0 0"><b>Being checked now</b></p>${rows}` : ''}`;
+    })() : rows || `<p class="empty">${isFirst ? 'No bill in progress.' : 'Nothing waiting right now.'}</p>`}
   </section>`;
 }
 async function viewOther(m) {
@@ -241,7 +255,7 @@ async function viewOther(m) {
   const billTiles = queues.map(({ task, bills }) => `<button class="task-tile bill-tile${state.openStage === task.code ? ' on' : ''}" data-stage="${task.code}"><span class="code">${task.code}</span><span class="grow">${esc(task.name)}</span>${bills.length ? `<span class="count">${bills.length}</span>` : ''}</button>`).join('');
   const tiles = state.tasks.filter((t) => t.stage_order == null).map((t) => `<button class="task-tile${running && running.task_code === t.code ? ' on' : ''}" data-code="${t.code}" ${running && running.task_code === t.code ? 'disabled' : ''}><span class="code">${t.code}</span><span>${esc(t.name)}</span></button>`).join('');
   m.innerHTML = `${now}
-    ${queues.length ? `<section class="card"><h2>Bill work</h2><p class="sub">Tap your bill step.</p><div class="task-grid">${billTiles}</div></section>${open ? stageCard(open.task, open.bills, allStages, busy) : ''}` : ''}
+    ${queues.length ? `<section class="card"><h2>Bill work</h2><p class="sub">Tap your bill step.</p><div class="task-grid">${billTiles}</div></section>${open ? stageCard(open.task, open.bills, allStages, busy, open.coming) : ''}` : ''}
     <section class="card"><h2>${queues.length ? 'Other work' : 'What are you doing now?'}</h2><p class="sub">Tap a task to start it. Tapping another task ends the current one.</p>
     ${busy ? `<p class="pill amber" style="margin-bottom:10px">Finish bill ${esc(busy.bill_no)} first</p>` : ''}<div class="task-grid"${busy ? ' style="opacity:.45;pointer-events:none"' : ''}>${tiles}</div></section>
     <section class="card"><h2>My recent tasks</h2>${rows.length ? `<div class="scroll"><table><tr><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Count</th></tr>
@@ -258,7 +272,7 @@ async function viewOther(m) {
   if (search) {
     const filter = () => {
       const q = search.value.trim().toUpperCase(); filters.queue = q;
-      m.querySelectorAll('.stage-panel .bill').forEach((el) => { el.hidden = q && !el.dataset.no.includes(q) && el.dataset.no !== padBillNo(q); });
+      m.querySelectorAll('.stage-panel [data-no]').forEach((el) => { el.hidden = q && !el.dataset.no.includes(q) && el.dataset.no !== padBillNo(q); });
     };
     search.oninput = filter; filter();
   }
