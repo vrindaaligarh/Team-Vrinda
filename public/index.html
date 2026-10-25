@@ -192,7 +192,7 @@ async function loadTab() {
 }
 
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810.
-const padBillNo = (no) => no.replace(/^(\d{1,6})$/, 'T$1').replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
+const padBillNo = (no) => no.replace(/^(\d{5})$/, 'T0$1').replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
 
 // Tasks like L Rack Setting and O Syrup Cases need a count when they end. Returns the number, or null if cancelled.
 function askQty(label) {
@@ -263,7 +263,7 @@ async function viewOther(m) {
   m.querySelectorAll('form.newbill').forEach((f) => f.onsubmit = (e) => {
     e.preventDefault();
     const no = padBillNo(f.no.value.trim().toUpperCase());
-    if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Use a bill no. like T050810 or a challan no. like CA007536', true);
+    if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Type the 5 digits (50810), a full bill no. like T050810, or a challan no. like CA007536', true);
     const extra = prevQty(); if (!extra) return;
     act(f.querySelector('button'), () => api('POST', '/api/bills', { bill_no: no, ...extra }), `${/^[A-Z]{2}/.test(no) ? 'Challan' : 'Bill'} ${no} started`);
   });
