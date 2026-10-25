@@ -539,7 +539,16 @@ const routes = {
     const onTask = {};
     for (const r of db.prepare(`SELECT e.task_code, u.name FROM entries e JOIN users u ON u.id = e.start_by
       WHERE e.bill_id IS NULL AND e.end_at IS NULL AND e.start_at IS NOT NULL ORDER BY u.name`).all()) (onTask[r.task_code] ||= []).push(r.name);
-    send(res, 200, { rows, busy: busyBill(u), busyAll: busyBills(u), onTask });
+    // Bill steps too (Preparing, Checking): the person who started and the second checker.
+    for (const r of db.prepare(`SELECT DISTINCT e.task_code, x.name FROM entries e JOIN users x ON x.id IN (e.start_by, e.partner_by)
+      WHERE e.bill_id IS NOT NULL AND e.end_at IS NULL AND e.start_at IS NOT NULL ORDER BY x.name`).all()) {
+      const list = (onTask[r.task_code] ||= []); if (!list.includes(r.name)) list.push(r.name);
+    }
+    // Owners, manager and desk staff: everyone who is not on any bill step or work task right now.
+    const idle = u.is_admin || u.is_manager || u.can_proxy ? db.prepare(`SELECT name FROM users WHERE active = 1 AND is_admin = 0 AND id NOT IN (
+      SELECT start_by FROM entries WHERE end_at IS NULL AND start_at IS NOT NULL AND start_by IS NOT NULL
+      UNION SELECT partner_by FROM entries WHERE end_at IS NULL AND start_at IS NOT NULL AND partner_by IS NOT NULL) ORDER BY name`).all().map((x) => x.name) : null;
+    send(res, 200, { rows, busy: busyBill(u), busyAll: busyBills(u), onTask, idle });
   },
   'POST /api/work': async (req, res, u) => {
     const { action, task_code, id, note, qty, prev_qty } = await readBody(req);
