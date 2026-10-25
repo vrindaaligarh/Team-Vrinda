@@ -453,7 +453,17 @@ async function viewStatus(m) {
   const seen = (r) => r.last_seen && (!from || (r.last_seen >= from && r.last_seen < to));
   const idle = rows.filter((r) => !r.jobs);
   const doing = (r) => r.running ? `<span class="pill amber">${r.running.task_code}</span> ${esc(r.running.task_name)}${r.running.bill_no ? ' · ' + esc(r.running.bill_no) : ''} · ${ago(r.running.start_at)}` : '';
-  m.innerHTML = `<div class="card row"><input type="date" id="fd" value="${filters.day}"></div>
+  // Search an employee: what they are doing right now, or their last job.
+  const found = () => {
+    const q = (filters.staffq || '').trim().toUpperCase();
+    if (!q) return '';
+    const hits = rows.filter((r) => r.name.toUpperCase().includes(q) || r.username.toUpperCase().includes(q));
+    return hits.map((r) => { const l = r.last_entry; return `<div class="bill"><div class="no" style="min-width:110px;font-size:16px">${esc(r.name)}</div><div class="info" style="color:var(--text)">
+      ${r.running ? `<b>Doing now:</b> ${doing(r)} <small class="sub">(started ${fmtTime(r.running.start_at)})</small>` : `<span class="pill gray">Nothing running</span>${l ? ` Last job: <span class="code">${l.task_code}</span> ${esc(l.task_name)}${l.bill_no ? ' · ' + esc(l.bill_no) : ''}, finished ${fmtFull(l.end_at || l.start_at)}` : ' No jobs yet'}`}
+      <div class="sub" style="margin:2px 0 0">${r.last_seen ? 'Last opened the app ' + fmtFull(r.last_seen) : 'Has never logged in'}</div></div></div>`; }).join('') || '<p class="empty">No employee with that name.</p>';
+  };
+  m.innerHTML = `<div class="card row"><input id="sq" class="grow" placeholder="Search employee, e.g. vicky" value="${esc(filters.staffq || '')}" autocomplete="off"><input type="date" id="fd" value="${filters.day}"></div>
+    <div id="sres"></div>
     <section class="card fixlist"><h2>No job logged ${isToday ? 'today' : 'on ' + esc(filters.day)} · ${idle.length} of ${rows.length}</h2>
       <p class="sub">These people have not started or finished any bill step or task${isToday ? ' yet today' : ''}.</p>
       ${idle.map((r) => `<div class="bill"><div class="no" style="min-width:110px;font-size:16px">${esc(r.name)}</div>
@@ -462,6 +472,9 @@ async function viewStatus(m) {
     <section class="card scroll"><h2>Everyone</h2><table><tr><th>Employee</th><th>Jobs</th><th>Last job</th><th>Doing now</th><th>Last seen</th></tr>
       ${rows.map((r) => `<tr><td><b>${esc(r.name)}</b><small>${esc(r.tasks.join(', '))}</small></td><td>${r.jobs || '<span class="pill amber">0</span>'}</td><td>${r.last_job ? fmtTime(r.last_job) : ''}</td><td>${doing(r)}</td><td>${r.last_seen ? fmtFull(r.last_seen) : 'Never'}</td></tr>`).join('')}
     </table></section>`;
+  const showFound = () => { const h = found(); $('#sres').innerHTML = h ? `<section class="card"><h2>Search result</h2>${h}</section>` : ''; };
+  showFound();
+  $('#sq').oninput = (e) => { filters.staffq = e.target.value; showFound(); };
   $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
 }
 

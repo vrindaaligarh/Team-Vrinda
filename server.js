@@ -496,9 +496,11 @@ const routes = {
       WHERE (start_by = ?1 AND start_at >= ?2 AND start_at < ?3) OR (end_by = ?1 AND end_at >= ?2 AND end_at < ?3)`);
     const running = db.prepare(`SELECT e.task_code, e.start_at, t.name AS task_name, b.bill_no FROM entries e JOIN tasks t ON t.code = e.task_code
       LEFT JOIN bills b ON b.id = e.bill_id WHERE e.start_by = ? AND e.start_at IS NOT NULL AND e.end_at IS NULL ORDER BY e.id DESC LIMIT 1`);
+    const lastEntry = db.prepare(`SELECT e.task_code, e.start_at, e.end_at, t.name AS task_name, b.bill_no FROM entries e JOIN tasks t ON t.code = e.task_code
+      LEFT JOIN bills b ON b.id = e.bill_id WHERE e.start_by = ?1 OR e.end_by = ?1 ORDER BY COALESCE(e.end_at, e.start_at) DESC LIMIT 1`);
     send(res, 200, users.map((x) => {
       const j = jobs.get(x.id, from, to);
-      return { id: x.id, name: x.name, username: x.username, tasks: userTasks(x), last_seen: x.last_seen, jobs: j.n, last_job: j.last, running: running.get(x.id) || null };
+      return { id: x.id, name: x.name, username: x.username, tasks: userTasks(x), last_seen: x.last_seen, jobs: j.n, last_job: j.last, running: running.get(x.id) || null, last_entry: lastEntry.get(x.id) || null };
     }));
   },
   // Owner deletes a wrong work-task entry from the Task Log (bill steps use reset-stage instead).
