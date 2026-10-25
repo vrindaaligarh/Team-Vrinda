@@ -281,7 +281,9 @@ async function viewOther(m) {
   const billTiles = queues.map(({ task, bills }) => `<button class="task-tile bill-tile${state.openStage === task.code ? ' on' : ''}" data-stage="${task.code}"><span class="code">${task.code}</span><span class="grow">${esc(task.name)}</span>${bills.length ? `<span class="count">${bills.length}</span>` : ''}</button>`).join('');
   const tiles = state.tasks.filter((t) => t.stage_order == null && !((state.tab === 'proxy' && state.who) || state.me).blocked.includes(t.code)).map((t) => `<button class="task-tile${running && running.task_code === t.code ? ' on' : ''}" data-code="${t.code}" ${running && running.task_code === t.code ? 'disabled' : ''}><span class="code">${t.code}</span><span class="grow">${esc(t.name)}${onTask[t.code] ? `<small class="who">${esc(onTask[t.code].join(', '))}</small>` : ''}</span>${onTask[t.code] ? `<span class="count">${onTask[t.code].length}</span>` : ''}</button>`).join('');
   m.innerHTML = `${now}
-    ${queues.length ? `<section class="card"><h2>Bill work</h2><p class="sub">Tap your bill step.</p><div class="task-grid">${billTiles}</div></section>${open ? stageCard(open.task, open.bills, allStages, busy, open.coming, open.done) : ''}` : ''}
+    ${queues.length ? `<section class="card"><h2>Bill work</h2>
+      <input id="findbill" class="billsearch" placeholder="Search bill no. to end its step, e.g. 50810" value="${esc(filters.find || '')}" autocapitalize="characters" autocomplete="off" style="margin-bottom:6px"><div id="findres"></div>
+      <p class="sub">Tap your bill step.</p><div class="task-grid">${billTiles}</div></section>${open ? stageCard(open.task, open.bills, allStages, busy, open.coming, open.done) : ''}` : ''}
     <section class="card"><h2>${queues.length ? 'Other work' : 'What are you doing now?'}</h2><p class="sub">${ownerView ? 'Who is on each task right now. To log work for an employee, use <b>Enter for Staff</b>.' : 'Tap a task to start it. Tapping another task ends the current one.'}</p>
     ${busy ? `<p class="pill amber" style="margin-bottom:10px">Finish ${busyAll.length > 1 ? 'your ' + busyAll.length + ' bills' : 'bill ' + esc(busy.bill_no)} first</p>` : ''}<div class="task-grid"${busy ? ' style="opacity:.45;pointer-events:none"' : ownerView ? ' style="pointer-events:none"' : ''}>${tiles}</div></section>
     <section class="card"><h2>My recent tasks</h2>${rows.length ? `<div class="scroll"><table><tr><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Count</th></tr>
@@ -296,6 +298,25 @@ async function viewOther(m) {
     act(f.querySelector('button'), () => api('POST', '/api/bills', { bill_no: no, items, ...extra }), `${/^[A-Z]{2}/.test(no) ? 'Challan' : 'Bill'} ${no} started`);
   });
   m.querySelectorAll('input.billno').forEach((i) => i.oninput = () => { i.value = i.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); });
+  // Search a bill across every step and press its button right here.
+  const find = $('#findbill');
+  if (find) {
+    const showFind = () => {
+      const q = find.value.trim().toUpperCase(); filters.find = q;
+      const box = $('#findres'); if (!q) { box.innerHTML = ''; return; }
+      const hits = queues.flatMap(({ task, bills }) => bills.map((b) => ({ task, b })))
+        .filter(({ b }) => b.bill_no.includes(q) || b.bill_no === padBillNo(q)).slice(0, 10);
+      box.innerHTML = hits.map(({ task, b }) => {
+        const e = b.stages[task.code];
+        const btn = task.kind === 'single' ? `<button class="btn green" data-a="done" data-b="${b.id}" data-t="${task.code}">${task.code === 'FR' ? 'Final Ready' : task.code === 'PK' ? 'Packed now' : 'Done now'}</button>`
+          : e && e.start_at ? `<button class="btn amber" data-a="end" data-b="${b.id}" data-t="${task.code}">End</button>`
+          : busy || ownerView ? '' : `<button class="btn" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`;
+        const info = e && e.start_at ? `<span class="pill amber">${task.code} in progress</span> ${esc(e.start_by_name)} since ${fmtTime(e.start_at)} · ${ago(e.start_at)}` : `<span class="pill gray">Waiting for ${task.code}</span> ${esc(task.name)}`;
+        return `<div class="bill"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div><div class="info">${info}</div>${btn}</div>`;
+      }).join('') || '<p class="empty">No open bill with that number in your steps.</p>';
+    };
+    find.oninput = showFind; showFind();
+  }
   const search = $('#billsearch');
   if (search) {
     const filter = () => {
