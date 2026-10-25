@@ -339,6 +339,23 @@ function billRows(where = '', params = []) {
   });
 }
 
+// Who is on each work task and bill step right now (names for the tiles).
+function liveOnTask() {
+  const onTask = {};
+  for (const r of db.prepare(`SELECT e.task_code, u.name FROM entries e JOIN users u ON u.id = e.start_by
+    WHERE e.bill_id IS NULL AND e.end_at IS NULL AND e.start_at IS NOT NULL ORDER BY u.name`).all()) (onTask[r.task_code] ||= []).push(r.name);
+  // Bill steps too (Preparing, Checking): the person who started and the second checker.
+  for (const r of db.prepare(`SELECT DISTINCT e.task_code, x.name FROM entries e JOIN users x ON x.id IN (e.start_by, e.partner_by)
+    WHERE e.bill_id IS NOT NULL AND e.end_at IS NULL AND e.start_at IS NOT NULL ORDER BY x.name`).all()) {
+    const list = (onTask[r.task_code] ||= []); if (!list.includes(r.name)) list.push(r.name);
+  }
+  return onTask;
+}
+// Everyone who is not on any bill step or work task right now.
+const idleNames = () => db.prepare(`SELECT name FROM users WHERE active = 1 AND is_admin = 0 AND id NOT IN (
+  SELECT start_by FROM entries WHERE end_at IS NULL AND start_at IS NOT NULL AND start_by IS NOT NULL
+  UNION SELECT partner_by FROM entries WHERE end_at IS NULL AND start_at IS NOT NULL AND partner_by IS NOT NULL) ORDER BY name`).all().map((x) => x.name);
+
 // ---------- API ----------
 const routes = {
   'POST /api/login': async (req, res) => {
@@ -467,9 +484,15 @@ const routes = {
     }
     send(res, 200, { ok: true, bill_no: bill.bill_no });
   },
+  // Live Board for the manager (ARUN): the owners' view of every bill step and work task, read-only plus End.
+  'GET /api/board': async (req, res, u) => {
+    if (!u.is_admin && !u.is_manager) fail(403, 'Not allowed');
+    const open = billRows().filter((b) => b.current !== 'DONE');
+    send(res, 200, { stages: stages().map((t) => ({ task: t, bills: open.filter((b) => b.current === t.code).reverse() })), onTask: liveOnTask(), idle: idleNames() });
+  },
   // Bill search for owners, MANSI and AFZAL: any open bill, at any step.
   'GET /api/find-bills': async (req, res, u, q) => {
-    if (!u.can_proxy && !u.can_alldone) fail(403, 'Not allowed');
+    if (!u.can_proxy && !u.can_alldone && !u.is_manager) fail(403, 'Not allowed');
     const term = String(q.get('q') || '').trim().toUpperCase();
     if (term.length < 2) return send(res, 200, { bills: [], work: [] });
     const st = stages();
@@ -487,7 +510,7 @@ const routes = {
     const { bill_id, task_code, action, prev_qty, partner_id } = await readBody(req);
     const task = db.prepare('SELECT * FROM tasks WHERE code = ? AND stage_order IS NOT NULL').get(task_code);
     if (!task) fail(400, 'Unknown stage');
-    const proxyEnd = action === 'end' && u.can_proxy && !u.entered_by;
+    const proxyEnd = action === 'end' && (u.can_proxy || u.is_manager) && !u.entered_by;
     if (!canDoStage(u, task.code) && !proxyEnd) fail(403, 'This stage is not in your login');
     const [bill] = billRows('WHERE b.id = ?', [bill_id]);
     if (!bill) fail(404, 'Bill not found');
@@ -520,9 +543,9 @@ const routes = {
     } else if (action === 'end') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
       if (!e || !e.start_at) fail(400, 'Press Start first');
-      if (task.code === stages()[0].code && e.start_by !== u.id && !u.is_admin && !u.can_proxy) fail(403, `Only ${e.start_by_name} can end this bill`);
+      if (task.code === stages()[0].code && e.start_by !== u.id && !u.is_admin && !u.can_proxy && !u.is_manager) fail(403, `Only ${e.start_by_name} can end this bill`);
       // Ended by MANSI/AFZAL/owner for someone else: saved as the starter's end, entered by them.
-      const forOther = u.can_proxy && !u.entered_by && e.start_by !== u.id && e.partner_by !== u.id;
+      const forOther = (u.can_proxy || u.is_manager) && !u.entered_by && e.start_by !== u.id && e.partner_by !== u.id;
       db.prepare('UPDATE entries SET end_at = ?, end_by = ?, entered_by = COALESCE(?, entered_by) WHERE id = ?').run(t, forOther ? e.start_by : u.id, forOther ? u.id : u.entered_by ?? null, e.id);
     } else if (action === 'done') {
       if (task.kind !== 'single') fail(400, 'This stage needs Start and End');
@@ -535,20 +558,9 @@ const routes = {
   'GET /api/work': async (req, res, u) => {
     const rows = db.prepare(`SELECT e.*, t.name AS task_name, t.count_label FROM entries e JOIN tasks t ON t.code = e.task_code
       WHERE e.bill_id IS NULL AND e.start_by = ? ORDER BY e.id DESC LIMIT 30`).all(u.id);
-    // How many people are on each work task right now, for the red counts on the tiles.
-    const onTask = {};
-    for (const r of db.prepare(`SELECT e.task_code, u.name FROM entries e JOIN users u ON u.id = e.start_by
-      WHERE e.bill_id IS NULL AND e.end_at IS NULL AND e.start_at IS NOT NULL ORDER BY u.name`).all()) (onTask[r.task_code] ||= []).push(r.name);
-    // Bill steps too (Preparing, Checking): the person who started and the second checker.
-    for (const r of db.prepare(`SELECT DISTINCT e.task_code, x.name FROM entries e JOIN users x ON x.id IN (e.start_by, e.partner_by)
-      WHERE e.bill_id IS NOT NULL AND e.end_at IS NULL AND e.start_at IS NOT NULL ORDER BY x.name`).all()) {
-      const list = (onTask[r.task_code] ||= []); if (!list.includes(r.name)) list.push(r.name);
-    }
-    // Only the owners (admin, ajanta): everyone who is not on any bill step or work task right now.
-    const idle = u.is_admin && !u.entered_by ? db.prepare(`SELECT name FROM users WHERE active = 1 AND is_admin = 0 AND id NOT IN (
-      SELECT start_by FROM entries WHERE end_at IS NULL AND start_at IS NOT NULL AND start_by IS NOT NULL
-      UNION SELECT partner_by FROM entries WHERE end_at IS NULL AND start_at IS NOT NULL AND partner_by IS NOT NULL) ORDER BY name`).all().map((x) => x.name) : null;
-    send(res, 200, { rows, busy: busyBill(u), busyAll: busyBills(u), onTask, idle });
+    // Only the owners (admin, ajanta) see who is not on any work.
+    const idle = u.is_admin && !u.entered_by ? idleNames() : null;
+    send(res, 200, { rows, busy: busyBill(u), busyAll: busyBills(u), onTask: liveOnTask(), idle });
   },
   'POST /api/work': async (req, res, u) => {
     const { action, task_code, id, note, qty, prev_qty } = await readBody(req);

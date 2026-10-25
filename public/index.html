@@ -64,6 +64,7 @@
   .items-in { width: 84px; }
   .no small.items { display: block; font-size: 12px; font-weight: 600; color: var(--muted, #667); }
   .task-tile small.who { display: block; font-size: 11px; font-weight: 500; color: var(--muted); line-height: 1.3; margin-top: 2px; }
+  .bill-tile.on small.who { color: inherit; opacity: .85; }
   .withside { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 12px; align-items: start; }
   .idlelist { position: sticky; top: 8px; max-height: calc(100vh - 16px); overflow-y: auto; }
   .idle-name { padding: 6px 0; border-bottom: 1px solid var(--line); font-weight: 600; }
@@ -187,6 +188,7 @@ function tabs() {
   // Owners don't log their own jobs, so they don't get My Jobs.
   const t = state.me.is_admin ? [['other', 'Work']] : [['other', 'Work'], ['mine', 'My Jobs']];
   if (state.me.can_proxy) t.splice(1, 0, ['prep', 'Preparing Entry'], ['proxy', 'Enter for Staff']);
+  if (state.me.is_manager) t.splice(1, 0, ['board', 'Live Board']);
   if (state.me.is_admin || state.me.tasks.includes('FR')) t.push(['final', 'Final Verification']);
   if (state.me.can_proxy && !state.me.is_admin && !state.me.is_manager) t.push(['all', 'All Bills']);
   if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['status', 'Staff Status'], ['fixes', 'Fix Requests']);
@@ -208,7 +210,7 @@ function render() {
   $('#lo').onclick = async () => { await api('POST', '/api/logout'); state.me = null; render(); };
   $('#pw').onclick = changePassword;
   loadTab();
-  if (['all', 'other', 'status', 'final', 'proxy', 'prep'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
+  if (['all', 'other', 'status', 'final', 'proxy', 'prep', 'board'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
 }
 async function changePassword() {
   const oldPassword = prompt('Current password'); if (oldPassword == null) return;
@@ -218,7 +220,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, board: viewBoard, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -536,6 +538,44 @@ async function viewMine(m) {
       ${!r.end_at ? '<span class="pill amber">In progress</span>' : r.verified_at ? `<span class="pill green">✓ Verified by ${esc(r.verified_by_name)}</span> <small class="sub">${fmtTime(r.verified_at)}</small>` : '<span class="pill gray">Waiting for verification</span>'}</div></div>`).join('') || '<p class="empty">No jobs on this day.</p>'}
     </section>`;
   $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
+}
+
+// ---------- Live Board (manager): every bill step and work task, who is on it, who is free ----------
+async function viewBoard(m) {
+  const { stages: st, onTask, idle } = await api('GET', '/api/board');
+  const who = (code) => onTask[code] ? `<small class="who">${esc(onTask[code].join(', '))}</small>` : '';
+  const tile = (t, n, bill) => `<button class="task-tile${bill ? ' bill-tile' : ''}${bill && state.boardStage === t.code ? ' on' : ''}" ${bill ? `data-bstage="${t.code}"` : 'style="cursor:default"'}><span class="code">${t.code}</span><span class="grow">${esc(t.name)}${who(t.code)}</span>${n ? `<span class="count">${n}</span>` : ''}</button>`;
+  const row = (t, b) => {
+    const e = b.stages[t.code], prev = st[st.findIndex((x) => x.task.code === t.code) - 1], p = prev && b.stages[prev.task.code];
+    const info = e && e.start_at ? `<span class="pill amber">In progress</span> ${esc(e.start_by_name)}${e.partner_name ? ' + ' + esc(e.partner_name) : ''} since ${fmtTime(e.start_at)} · ${ago(e.start_at)}`
+      : `<span class="pill gray">Waiting</span>${p && p.end_at ? ` since ${fmtTime(p.end_at)} · ${ago(p.end_at)}` : ''}`;
+    return `<div class="bill"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div><div class="info">${info}</div>${e && e.start_at ? `<button class="btn amber" data-bend="${b.id}" data-t="${t.code}">End</button>` : ''}</div>`;
+  };
+  const open = st.find((x) => x.task.code === state.boardStage);
+  const work = state.tasks.filter((t) => t.stage_order == null);
+  m.innerHTML = `<div class="withside"><div>
+    <section class="card"><h2>Bill work</h2>
+      <input id="bsearch" class="billsearch" placeholder="Search bill no. or employee name" value="${esc(filters.board || '')}" autocapitalize="characters" autocomplete="off"><div id="bres"></div>
+      <div class="task-grid" style="margin-top:8px">${st.map((x) => tile(x.task, x.bills.length, true)).join('')}</div></section>
+    ${open ? `<section class="card stage-panel"><h2><span class="code">${open.task.code}</span>${esc(open.task.name)} · ${open.bills.length}</h2>${open.bills.map((b) => row(open.task, b)).join('') || '<p class="empty">No bills here.</p>'}</section>` : ''}
+    <section class="card"><h2>Other work</h2><p class="sub">Who is on each task right now.</p><div class="task-grid">${work.map((t) => tile(t, (onTask[t.code] || []).length, false)).join('')}</div></section>
+  </div><aside class="card idlelist"><h2>Not on any work · ${idle.length}</h2><p class="sub">Updates every 15 seconds.</p>${idle.map((n) => `<div class="idle-name">${esc(n)}</div>`).join('') || '<p class="empty">Everyone is working.</p>'}</aside></div>`;
+  const find = $('#bsearch');
+  const showFind = async () => {
+    const q = find.value.trim().toUpperCase(); filters.board = q;
+    const box = $('#bres'); if (q.length < 2) { box.innerHTML = ''; return; }
+    const found = await api('GET', '/api/find-bills?q=' + encodeURIComponent(q)).catch(() => ({ bills: [], work: [] }));
+    if (find.value.trim().toUpperCase() !== q) return;
+    box.innerHTML = found.bills.map((b) => row(b.task, b).replace('<div class="info">', `<div class="info"><b style="color:var(--text)">${b.task.code} ${esc(b.task.name)}</b> · `)).join('')
+      + found.work.map((w) => `<div class="bill"><div class="no" style="font-size:16px">${esc(w.name)}</div><div class="info"><span class="pill amber">${w.task_code}</span> ${esc(w.task_name)} since ${fmtTime(w.start_at)} · ${ago(w.start_at)}</div></div>`).join('')
+      || `<p class="empty">No open bill or running task for "${esc(q)}".</p>`;
+  };
+  find.oninput = showFind; showFind();
+  m.onclick = (e) => {
+    const t = e.target.closest('button[data-bstage]'); if (t) { state.boardStage = state.boardStage === t.dataset.bstage ? null : t.dataset.bstage; return loadTab(); }
+    const en = e.target.closest('button[data-bend]');
+    if (en) act(en, () => api('POST', '/api/stage', { bill_id: +en.dataset.bend, task_code: en.dataset.t, action: 'end' }), 'Ended at ' + fmtTime(new Date().toISOString()));
+  };
 }
 
 // ---------- Preparing Entry: one simple form to start Preparing for any employee, and the bills being prepared ----------
