@@ -176,7 +176,8 @@ function renderLogin() {
 
 // ---------- shell ----------
 function tabs() {
-  const t = [['other', 'Work'], ['mine', 'My Jobs']];
+  // Owners don't log their own jobs, so they don't get My Jobs.
+  const t = state.me.is_admin ? [['other', 'Work']] : [['other', 'Work'], ['mine', 'My Jobs']];
   if (state.me.can_proxy) t.splice(1, 0, ['prep', 'Preparing Entry'], ['proxy', 'Enter for Staff']);
   if (state.me.is_admin || state.me.tasks.includes('FR')) t.push(['final', 'Final Verification']);
   if (state.me.can_proxy && !state.me.is_admin && !state.me.is_manager) t.push(['all', 'All Bills']);
