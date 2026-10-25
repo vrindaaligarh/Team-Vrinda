@@ -216,6 +216,10 @@ const now = () => new Date().toISOString();
 const stages = () => db.prepare('SELECT * FROM tasks WHERE stage_order IS NOT NULL ORDER BY stage_order').all();
 const userTasks = (u) => u.tasks.split(',').map((s) => s.trim()).filter(Boolean);
 const canDo = (u, code) => u.is_admin || userTasks(u).includes(code);
+// Running one of these work tasks unlocks the matching bill step: anyone on I Polythene Packing can mark bills packed (PK).
+const UNLOCKS = { I: 'PK' };
+const runningWork = (u) => (db.prepare('SELECT task_code FROM entries WHERE bill_id IS NULL AND start_by = ? AND end_at IS NULL').get(u.id) || {}).task_code;
+const canDoStage = (u, code) => canDo(u, code) || UNLOCKS[runningWork(u)] === code;
 const canReview = (u) => !!(u.is_admin || u.is_manager);
 
 function send(res, status, body, headers = {}) {
@@ -329,7 +333,7 @@ const routes = {
       .filter((b) => b.current !== 'DONE');
     const out = [];
     for (const t of st) {
-      if (!canDo(u, t.code)) continue;
+      if (!canDoStage(u, t.code)) continue;
       const prev = st[st.indexOf(t) - 1];
       // Bills still at the previous step, shown greyed so people know what's coming.
       const coming = prev ? open.filter((b) => b.current === prev.code).reverse()
@@ -360,7 +364,7 @@ const routes = {
     const { bill_id, task_code, action, prev_qty } = await readBody(req);
     const task = db.prepare('SELECT * FROM tasks WHERE code = ? AND stage_order IS NOT NULL').get(task_code);
     if (!task) fail(400, 'Unknown stage');
-    if (!canDo(u, task.code)) fail(403, 'This stage is not in your login');
+    if (!canDoStage(u, task.code)) fail(403, 'This stage is not in your login');
     const [bill] = billRows('WHERE b.id = ?', [bill_id]);
     if (!bill) fail(404, 'Bill not found');
     if (bill.current !== task.code) fail(400, `Bill ${bill.bill_no} is not waiting for ${task.name}`);

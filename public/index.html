@@ -243,11 +243,13 @@ function stageCard(task, bills, allStages, busy, coming = [], doneList = []) {
   </section>`;
 }
 async function viewOther(m) {
-  const [{ rows, busy, busyAll = [] }, queues] = await Promise.all([api('GET', '/api/work'), state.me.tasks.length || state.me.is_admin ? api('GET', '/api/queue') : []]);
+  const [{ rows, busy, busyAll = [] }, queues] = await Promise.all([api('GET', '/api/work'), api('GET', '/api/queue')]);
   const allStages = state.tasks.filter((t) => t.stage_order != null);
   const running = rows.find((r) => !r.end_at);
   // Ending the running task (by starting something else) needs its count first.
   const prevQty = () => { if (!running || !running.count_label) return {}; const n = askQty(running.count_label); return n === null ? null : { prev_qty: n }; };
+  // On I Polythene Packing: open the packing list straight away.
+  if (running && running.task_code === 'I' && queues.some((q) => q.task.code === 'PK') && state.autoPK !== running.id) { state.openStage = 'PK'; state.autoPK = running.id; }
   if (state.openStage && !queues.some((q) => q.task.code === state.openStage)) state.openStage = null;
   const open = queues.find((q) => q.task.code === state.openStage);
   const now = busy
