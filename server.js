@@ -436,6 +436,14 @@ const routes = {
     if (!u.can_proxy) fail(403, 'Not allowed');
     send(res, 200, db.prepare('SELECT id, name FROM users WHERE active = 1 AND is_admin = 0 ORDER BY name').all());
   },
+  // Preparing Entry tab (owners, MANSI, AFZAL, NEHA, RIYA): everyone who can prepare, and every bill being prepared now.
+  'GET /api/preparing': async (req, res, u) => {
+    if (!u.can_proxy) fail(403, 'Not allowed');
+    const first = stages()[0];
+    const staff = db.prepare('SELECT id, name, tasks FROM users WHERE active = 1 AND is_admin = 0 ORDER BY name').all()
+      .filter((x) => userTasks(x).includes(first.code)).map(({ id, name }) => ({ id, name }));
+    send(res, 200, { staff, bills: billRows().filter((b) => b.current === first.code && b.stages[first.code] && b.stages[first.code].start_at) });
+  },
   // Bill search for owners, MANSI and AFZAL: any open bill, at any step.
   'GET /api/find-bills': async (req, res, u, q) => {
     if (!u.can_proxy) fail(403, 'Not allowed');

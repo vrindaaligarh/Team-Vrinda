@@ -174,7 +174,7 @@ function renderLogin() {
 // ---------- shell ----------
 function tabs() {
   const t = [['other', 'Work'], ['mine', 'My Jobs']];
-  if (state.me.can_proxy) t.splice(1, 0, ['proxy', 'Enter for Staff']);
+  if (state.me.can_proxy) t.splice(1, 0, ['prep', 'Preparing Entry'], ['proxy', 'Enter for Staff']);
   if (state.me.is_admin || state.me.tasks.includes('FR')) t.push(['final', 'Final Verification']);
   if (state.me.can_proxy && !state.me.is_admin && !state.me.is_manager) t.push(['all', 'All Bills']);
   if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['status', 'Staff Status'], ['fixes', 'Fix Requests']);
@@ -196,7 +196,7 @@ function render() {
   $('#lo').onclick = async () => { await api('POST', '/api/logout'); state.me = null; render(); };
   $('#pw').onclick = changePassword;
   loadTab();
-  if (['all', 'other', 'status', 'final', 'proxy'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
+  if (['all', 'other', 'status', 'final', 'proxy', 'prep'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
 }
 async function changePassword() {
   const oldPassword = prompt('Current password'); if (oldPassword == null) return;
@@ -206,7 +206,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -506,6 +506,52 @@ async function viewMine(m) {
       ${!r.end_at ? '<span class="pill amber">In progress</span>' : r.verified_at ? `<span class="pill green">✓ Verified by ${esc(r.verified_by_name)}</span> <small class="sub">${fmtTime(r.verified_at)}</small>` : '<span class="pill gray">Waiting for verification</span>'}</div></div>`).join('') || '<p class="empty">No jobs on this day.</p>'}
     </section>`;
   $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
+}
+
+// ---------- Preparing Entry: one simple form to start Preparing for any employee, and the bills being prepared ----------
+async function apiFor(userId, method, url, body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-For-User': String(userId) }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || 'Error');
+  return data;
+}
+async function viewPrep(m) {
+  const { staff, bills } = await api('GET', '/api/preparing');
+  const pr = (b) => b.stages.PR || {};
+  m.innerHTML = `<section class="card"><h2>Preparing Sale Items · new entry</h2>
+    <form id="prepform" class="row" style="flex-wrap:wrap">
+      <select name="who" required style="flex:1 1 140px"><option value="">Employee…</option>${staff.map((x) => `<option value="${x.id}" ${x.id === state.prepWho ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
+      <input name="no" class="billno" placeholder="Bill no. e.g. 50810" maxlength="8" autocapitalize="characters" autocomplete="off" required style="flex:1 1 120px">
+      <input name="items" class="items-in" type="number" inputmode="numeric" min="1" max="9999" placeholder="Items" required>
+      <button class="btn">Submit</button></form>
+    <p class="sub" style="margin:6px 0 0">Starts Preparing for that employee at the current time. Press End below when they finish.</p></section>
+    <section class="card"><h2>Being prepared now · ${bills.length}</h2>
+    <input id="prepsearch" class="billsearch" placeholder="Search employee name or bill no." value="${esc(filters.prep || '')}" autocapitalize="characters" autocomplete="off">
+    ${bills.map((b) => { const e = pr(b); return `<div class="bill" data-no="${esc(b.bill_no + ' ' + (e.start_by_name || ''))}"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div>
+      <div class="info"><b style="color:var(--text)">${esc(e.start_by_name || '')}</b> · started ${fmtTime(e.start_at)} · ${ago(e.start_at)}${e.entered_by_name ? ` <small>(entered by ${esc(e.entered_by_name)})</small>` : ''}</div>
+      ${editBtn(b.id, b.bill_no, b.items)}<button class="btn amber" data-end="${b.id}">End</button></div>`; }).join('') || '<p class="empty">No bills being prepared.</p>'}
+    </section>`;
+  const f = $('#prepform');
+  f.no.oninput = () => { f.no.value = f.no.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); };
+  f.who.onchange = () => { state.prepWho = +f.who.value || null; };
+  f.onsubmit = (e) => {
+    e.preventDefault();
+    const no = padBillNo(f.no.value.trim().toUpperCase()), items = Number(f.items.value);
+    if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Type the 5 digits (50810), a full bill no. like T050810, or a challan no. like CA007536', true);
+    if (!Number.isInteger(items) || items < 1) return toast('Type the number of items', true);
+    const who = staff.find((x) => x.id === +f.who.value);
+    act(f.querySelector('button'), () => apiFor(who.id, 'POST', '/api/bills', { bill_no: no, items }), `${no} started for ${who.name}`);
+  };
+  const filter = () => {
+    const q = $('#prepsearch').value.trim().toUpperCase(); filters.prep = q;
+    m.querySelectorAll('.bill[data-no]').forEach((r) => { r.hidden = q && !r.dataset.no.toUpperCase().includes(q) && !r.dataset.no.startsWith(padBillNo(q)); });
+  };
+  $('#prepsearch').oninput = filter; filter();
+  m.onclick = (e) => {
+    const ed = e.target.closest('button[data-edit]'); if (ed) return editBill(ed);
+    const en = e.target.closest('button[data-end]');
+    if (en) act(en, () => api('POST', '/api/stage', { bill_id: +en.dataset.end, task_code: 'PR', action: 'end' }), 'Ended at ' + fmtTime(new Date().toISOString()));
+  };
 }
 
 // ---------- Enter for staff: press work buttons for someone who forgot their phone ----------
