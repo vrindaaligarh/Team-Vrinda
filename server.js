@@ -447,7 +447,11 @@ const routes = {
   'GET /api/work': async (req, res, u) => {
     const rows = db.prepare(`SELECT e.*, t.name AS task_name, t.count_label FROM entries e JOIN tasks t ON t.code = e.task_code
       WHERE e.bill_id IS NULL AND e.start_by = ? ORDER BY e.id DESC LIMIT 30`).all(u.id);
-    send(res, 200, { rows, busy: busyBill(u), busyAll: busyBills(u) });
+    // How many people are on each work task right now, for the red counts on the tiles.
+    const onTask = {};
+    for (const r of db.prepare(`SELECT e.task_code, u.name FROM entries e JOIN users u ON u.id = e.start_by
+      WHERE e.bill_id IS NULL AND e.end_at IS NULL AND e.start_at IS NOT NULL ORDER BY u.name`).all()) (onTask[r.task_code] ||= []).push(r.name);
+    send(res, 200, { rows, busy: busyBill(u), busyAll: busyBills(u), onTask });
   },
   'POST /api/work': async (req, res, u) => {
     const { action, task_code, id, note, qty, prev_qty } = await readBody(req);
