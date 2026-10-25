@@ -296,9 +296,11 @@ function startingBill(u, prevQty, code) {
   const first = stages()[0].code;
   const busy = busyBills(u).find((b) => !(code === first && b.task_code === first));
   if (busy) fail(400, `Finish bill ${busy.bill_no} first`);
-  // Starting a bill ends any work task the person had running.
-  endOpenWork(u, prevQty);
+  // Starting a bill ends any work task the person had running, except ones that are only ended by hand (M Sale Goods Check).
+  if (!MANUAL_END.includes(runningWork(u))) endOpenWork(u, prevQty);
 }
+// Work tasks that keep running until the person presses End themselves.
+const MANUAL_END = ['M'];
 // Bill: T or R + 6 digits (T050810). Challan: 2 letters + 6 digits (CA007536).
 const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Exactly 5 digits: below 50000 is an R bill (12345 -> R012345), 50000 and up a T bill (50810 -> T050810).
@@ -495,6 +497,8 @@ const routes = {
       if (u.is_admin) fail(403, 'Owners do not log work tasks. Use Enter for Staff to log work for an employee.');
       const busy = busyBill(u);
       if (busy) fail(400, `Finish bill ${busy.bill_no} first`);
+      const cur = runningWork(u);
+      if (MANUAL_END.includes(cur)) fail(400, `Press End on ${cur} ${db.prepare('SELECT name FROM tasks WHERE code = ?').get(cur).name} first`);
       // Starting a new task ends whatever this person was doing before.
       endOpenWork(u, prev_qty);
       db.prepare('INSERT INTO entries (task_code, start_at, start_by, note, entered_by) VALUES (?, ?, ?, ?, ?)').run(task_code, now(), u.id, String(note || ''), u.entered_by ?? null);
