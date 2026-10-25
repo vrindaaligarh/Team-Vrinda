@@ -310,7 +310,7 @@ async function viewOther(m) {
   const find = $('#findbill');
   if (find) {
     // Owners, MANSI and AFZAL search every open bill on the server; others search their own steps.
-    const wide = state.me.can_proxy && state.tab !== 'proxy';
+    const wide = (state.me.can_proxy || state.me.can_alldone) && state.tab !== 'proxy';
     const showFind = async () => {
       const q = find.value.trim().toUpperCase(); filters.find = q;
       const box = $('#findres'); if (!q) { box.innerHTML = ''; return; }
@@ -322,11 +322,11 @@ async function viewOther(m) {
       box.innerHTML = hits.map(({ task, b }) => {
         const e = b.stages[task.code];
         const btn = task.kind === 'single' ? (!mine(task.code) ? '' : `<button class="btn green" data-a="done" data-b="${b.id}" data-t="${task.code}">${task.code === 'FR' ? 'Final Ready' : task.code === 'PK' ? 'Packed now' : 'Done now'}</button>`)
-          : e && e.start_at ? `<button class="btn amber" data-a="end" data-b="${b.id}" data-t="${task.code}">End</button>`
+          : e && e.start_at ? (!state.me.can_proxy && e.start_by !== state.me.id && e.partner_by !== state.me.id ? '' : `<button class="btn amber" data-a="end" data-b="${b.id}" data-t="${task.code}">End</button>`)
           : busy || ownerView || !mine(task.code) ? '' : `<button class="btn" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`;
         const info = e && e.start_at ? `<span class="pill amber">${task.code} in progress</span> ${esc(e.start_by_name)}${e.partner_name ? ' + ' + esc(e.partner_name) : ''} since ${fmtTime(e.start_at)} · ${ago(e.start_at)}` : `<span class="pill gray">Waiting for ${task.code}</span> ${esc(task.name)}`;
-        return `<div class="bill"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div><div class="info">${info}</div>${btn}</div>`;
-      }).join('') + found.work.map((w) => `<div class="bill"><div class="no" style="font-size:16px">${esc(w.name)}</div><div class="info"><span class="pill amber">${w.task_code}</span> ${esc(w.task_name)} since ${fmtTime(w.start_at)} · ${ago(w.start_at)}</div>
+        return `<div class="bill"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div><div class="info">${info}</div>${btn}${allDoneBtn(b)}</div>`;
+      }).join('') + found.work.filter(() => state.me.can_proxy).map((w) => `<div class="bill"><div class="no" style="font-size:16px">${esc(w.name)}</div><div class="info"><span class="pill amber">${w.task_code}</span> ${esc(w.task_name)} since ${fmtTime(w.start_at)} · ${ago(w.start_at)}</div>
         <button class="btn amber" data-endwork="${w.id}" data-user="${w.user_id}" data-label="${esc(w.count_label || '')}">End</button></div>`).join('')
         || `<p class="empty">No open bill or running task for "${esc(q)}".</p>`;
     };
@@ -413,7 +413,7 @@ async function viewAll(m) {
         const status = b.current === 'DONE' ? '<span class="pill green">Ready</span>' : `<span class="pill amber">At ${b.current} ${esc(name(b.current))}</span>`;
         const done = stages.filter((s) => b.stages[s.code]);
         const detail = filters.open === b.id ? `<tr class="detail"><td colspan="${stages.length + 4}">
-          Bill #${esc(b.bill_no)}${b.items ? ` (${b.items} items)` : ''} created ${fmtFull(b.created_at)} by ${esc(b.created_by_name)}. ${editBtn(b.id, b.bill_no, b.items).replace('>Edit<', '>Change bill no. / items<')}${state.me.is_admin || state.me.is_manager ? `<br>Verify each step that was punched right:
+          Bill #${esc(b.bill_no)}${b.items ? ` (${b.items} items)` : ''} created ${fmtFull(b.created_at)} by ${esc(b.created_by_name)}. ${editBtn(b.id, b.bill_no, b.items).replace('>Edit<', '>Change bill no. / items<')} ${allDoneBtn(b)}${state.me.is_admin || state.me.is_manager ? `<br>Verify each step that was punched right:
           <div class="row" style="margin:8px 0 10px">${done.filter((s) => b.stages[s.code].end_at).map((s) => { const e = b.stages[s.code]; return e.verified_at ? `<span class="pill green">${s.code} verified by ${esc(e.verified_by_name)}</span> <a href="#" data-unverify="${e.id}">undo</a>` : `<button class="btn green small" data-verify="${e.id}">Verify ${s.code}</button>`; }).join('') || '<span class="sub">No finished steps yet.</span>'}</div>
           Or ask the person to fix a wrong punch:
           <div class="row" style="margin-top:8px">${done.map((s) => { const e = b.stages[s.code]; return `<button class="btn ghost small" data-fix="${e.id}" data-who="${esc(e.start_by_name || e.end_by_name)}">Ask ${esc(e.start_by_name || e.end_by_name)} to fix ${s.code}</button>`; }).join('')}</div>` : ''}
@@ -491,6 +491,13 @@ function editBill(btn) {
   act(btn, () => api('POST', '/api/bills/edit', { bill_id: +btn.dataset.edit, bill_no: fixed, items: Number(items) }), `Changed to ${fixed}`);
 }
 const editBtn = (id, no, items) => `<button class="btn ghost small" data-edit="${id}" data-no="${esc(no)}" data-items="${items || ''}">Edit</button>`;
+// All done: every remaining step finished now and the bill is Final Ready.
+const allDoneBtn = (b) => state.me.can_alldone && b.current !== 'DONE' ? `<button class="btn green small" data-alldone="${b.id}" data-no="${esc(b.bill_no)}">All done</button>` : '';
+function allDone(btn) {
+  if (!confirm(`Mark bill ${btn.dataset.no} as ALL DONE?\nEvery remaining step is finished now and the bill becomes Final Ready.`)) return;
+  act(btn, () => api('POST', '/api/bills/alldone', { bill_id: +btn.dataset.alldone }), `${btn.dataset.no} is final ready`);
+}
+document.addEventListener('click', (e) => { const b = e.target.closest('button[data-alldone]'); if (b) { e.stopPropagation(); allDone(b); } }, true);
 const itemsTag = (b) => b.items ? `<small class="items">${b.items} items</small>` : '';
 const countCell = (r) => r.count_label ? (r.qty != null ? `<b>${r.qty}</b> ${esc(r.count_label)}` : '') : '';
 
@@ -529,7 +536,7 @@ async function viewPrep(m) {
     <input id="prepsearch" class="billsearch" placeholder="Search employee name or bill no." value="${esc(filters.prep || '')}" autocapitalize="characters" autocomplete="off">
     ${bills.map((b) => { const e = pr(b); return `<div class="bill" data-no="${esc(b.bill_no + ' ' + (e.start_by_name || ''))}"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div>
       <div class="info"><b style="color:var(--text)">${esc(e.start_by_name || '')}</b> · started ${fmtTime(e.start_at)} · ${ago(e.start_at)}${e.entered_by_name ? ` <small>(entered by ${esc(e.entered_by_name)})</small>` : ''}</div>
-      ${editBtn(b.id, b.bill_no, b.items)}<button class="btn amber" data-end="${b.id}">End</button></div>`; }).join('') || '<p class="empty">No bills being prepared.</p>'}
+      ${editBtn(b.id, b.bill_no, b.items)}${allDoneBtn(b)}<button class="btn amber" data-end="${b.id}">End</button></div>`; }).join('') || '<p class="empty">No bills being prepared.</p>'}
     </section>`;
   const f = $('#prepform');
   f.no.oninput = () => { f.no.value = f.no.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); };

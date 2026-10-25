@@ -243,6 +243,11 @@ migrate('2026-10-25-neha-like-mansi', () => {
 migrate('2026-10-25-riya-like-mansi', () => {
   db.prepare("UPDATE users SET can_proxy = 1, tasks = (SELECT tasks FROM users WHERE username = 'mansi') WHERE username = 'riya'").run();
 });
+// "All done" button: finishes every remaining step of a bill at once (owners, VICKY, AFZAL, MANSI, NEHA).
+migrate('2026-10-25-all-done', () => {
+  db.exec('ALTER TABLE users ADD COLUMN can_alldone INTEGER NOT NULL DEFAULT 0');
+  db.prepare("UPDATE users SET can_alldone = 1 WHERE is_admin = 1 OR username IN ('vicky', 'afzal', 'mansi', 'neha')").run();
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
@@ -312,7 +317,7 @@ const MANUAL_END = ['M'];
 const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Exactly 5 digits: below 50000 is an R bill (12345 -> R012345), 50000 and up a T bill (50810 -> T050810).
 const padBillNo = (no) => no.replace(/^(\d{5})$/, (m, d) => (Number(d) < 50000 ? 'R0' : 'T0') + d).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
-const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, active: !!u.active });
+const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_alldone: !!u.can_alldone, active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
 function billRows(where = '', params = []) {
@@ -444,9 +449,27 @@ const routes = {
       .filter((x) => userTasks(x).includes(first.code)).map(({ id, name }) => ({ id, name }));
     send(res, 200, { staff, bills: billRows().filter((b) => b.current === first.code && b.stages[first.code] && b.stages[first.code].start_at) });
   },
+  // All done: end the running step and record every step still missing, so the bill is Final Ready now.
+  // Running steps end under the person doing them; missing steps are saved under whoever pressed, marked "All done".
+  'POST /api/bills/alldone': async (req, res, u) => {
+    if (!u.can_alldone) fail(403, 'Not allowed');
+    const { bill_id } = await readBody(req);
+    const [bill] = billRows('WHERE b.id = ?', [bill_id]);
+    if (!bill) fail(404, 'Bill not found');
+    if (bill.current === 'DONE') fail(400, `Bill ${bill.bill_no} is already final ready`);
+    const t = now();
+    for (const st of stages()) {
+      const e = bill.stages[st.code];
+      if (e && e.end_at) continue;
+      if (e) db.prepare("UPDATE entries SET end_at = ?, end_by = ?, entered_by = ?, note = 'All done' WHERE id = ?").run(t, e.start_by || u.id, u.id, e.id);
+      else db.prepare("INSERT INTO entries (bill_id, task_code, start_at, start_by, end_at, end_by, entered_by, note) VALUES (?, ?, ?, ?, ?, ?, ?, 'All done')")
+        .run(bill.id, st.code, st.kind === 'startend' ? t : null, st.kind === 'startend' ? u.id : null, t, u.id, u.id);
+    }
+    send(res, 200, { ok: true, bill_no: bill.bill_no });
+  },
   // Bill search for owners, MANSI and AFZAL: any open bill, at any step.
   'GET /api/find-bills': async (req, res, u, q) => {
-    if (!u.can_proxy) fail(403, 'Not allowed');
+    if (!u.can_proxy && !u.can_alldone) fail(403, 'Not allowed');
     const term = String(q.get('q') || '').trim().toUpperCase();
     if (term.length < 2) return send(res, 200, { bills: [], work: [] });
     const st = stages();
