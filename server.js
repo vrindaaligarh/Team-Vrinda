@@ -392,6 +392,15 @@ const routes = {
     send(res, 200, { ok: true });
   },
 
+  // The person's own jobs (bill steps and work tasks) for a day, with verification status.
+  'GET /api/my-jobs': async (req, res, u, q) => {
+    const from = q.get('from') || '0000', to = q.get('to') || '9999';
+    send(res, 200, db.prepare(`SELECT e.id, e.task_code, e.start_at, e.end_at, e.qty, e.verified_at, t.name AS task_name, t.count_label,
+        b.bill_no, vu.name AS verified_by_name FROM entries e JOIN tasks t ON t.code = e.task_code
+      LEFT JOIN bills b ON b.id = e.bill_id LEFT JOIN users vu ON vu.id = e.verified_by
+      WHERE (e.start_by = ?1 AND e.start_at >= ?2 AND e.start_at < ?3) OR (e.start_by IS NULL AND e.end_by = ?1 AND e.end_at >= ?2 AND e.end_at < ?3)
+      ORDER BY COALESCE(e.start_at, e.end_at) DESC`).all(u.id, from, to));
+  },
   // Manager/owner confirms a finished job (work task or bill step) was punched correctly. undo: true clears it.
   'POST /api/verify': async (req, res, u) => {
     if (!canReview(u)) fail(403, 'Managers only');

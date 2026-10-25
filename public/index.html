@@ -150,7 +150,7 @@ function renderLogin() {
 
 // ---------- shell ----------
 function tabs() {
-  const t = [['other', 'Work']];
+  const t = [['other', 'Work'], ['mine', 'My Jobs']];
   if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['status', 'Staff Status'], ['fixes', 'Fix Requests']);
   if (state.me.is_admin) t.push(['staff', 'Staff'], ['codes', 'Task Codes']);
   return t;
@@ -180,7 +180,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, mine: viewMine, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -394,6 +394,20 @@ async function viewTaskLog(m) {
 }
 
 const countCell = (r) => r.count_label ? (r.qty != null ? `<b>${r.qty}</b> ${esc(r.count_label)}` : '') : '';
+
+// ---------- My Jobs: the person's own jobs with verification ticks ----------
+async function viewMine(m) {
+  const { from, to } = dayRange(filters.day);
+  const rows = await api('GET', '/api/my-jobs?' + new URLSearchParams(from ? { from, to } : {}));
+  const done = rows.filter((r) => r.end_at), ok = done.filter((r) => r.verified_at);
+  m.innerHTML = `<div class="card row"><input type="date" id="fd" value="${filters.day}"><span class="sub" style="margin:0">${ok.length} of ${done.length} finished jobs verified</span></div>
+    <section class="card"><h2>My jobs</h2>
+    ${rows.map((r) => `<div class="bill"><span class="code">${r.task_code}</span><div class="info" style="color:var(--text)"><b>${esc(r.task_name)}</b>${r.bill_no ? ' · Bill ' + esc(r.bill_no) : ''}${r.qty != null ? ` · ${r.qty} ${esc(r.count_label)}` : ''}
+      <div class="sub" style="margin:2px 0 4px">${r.start_at ? fmtTime(r.start_at) + ' – ' : ''}${r.end_at ? fmtTime(r.end_at) : 'running'}${r.start_at && r.end_at ? ' · ' + dur(r.start_at, r.end_at) : ''}</div>
+      ${!r.end_at ? '<span class="pill amber">In progress</span>' : r.verified_at ? `<span class="pill green">✓ Verified by ${esc(r.verified_by_name)}</span> <small class="sub">${fmtTime(r.verified_at)}</small>` : '<span class="pill gray">Waiting for verification</span>'}</div></div>`).join('') || '<p class="empty">No jobs on this day.</p>'}
+    </section>`;
+  $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
+}
 
 // ---------- Staff status: who hasn't logged a job ----------
 async function viewStatus(m) {
