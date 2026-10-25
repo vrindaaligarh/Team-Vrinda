@@ -274,7 +274,8 @@ function currentUser(req) {
 }
 // The bill this person has started (preparing or checking) but not finished yet, if any.
 // Bills this person has started but not finished (several are allowed while preparing).
-const busyBills = (u) => db.prepare(`SELECT b.id AS bill_id, b.bill_no, b.items, e.task_code, e.start_at, t.name AS task_name FROM entries e
+const busyBills = (u) => db.prepare(`SELECT b.id AS bill_id, b.bill_no, b.items, e.task_code, e.start_at, t.name AS task_name,
+  (SELECT name FROM users WHERE id = CASE WHEN e.start_by = ?1 THEN e.partner_by ELSE e.start_by END) AS with_name FROM entries e
   JOIN bills b ON b.id = e.bill_id JOIN tasks t ON t.code = e.task_code
   WHERE (e.start_by = ?1 OR e.partner_by = ?1) AND e.start_at IS NOT NULL AND e.end_at IS NULL ORDER BY e.id`).all(u.id);
 const busyBill = (u) => busyBills(u)[0] || null;
@@ -373,7 +374,10 @@ const routes = {
         [t.code, u.id, new Date(Date.now() - 12 * 3600e3).toISOString()]).slice(0, 40).map((b) => ({ bill_no: b.bill_no, current: b.current, end_at: b.stages[t.code].end_at }));
       // Preparing: staff see only the bills they started themselves; owners see all.
       const mine = (b) => prev || u.is_admin || (b.stages[t.code] && b.stages[t.code].start_by === u.id);
-      out.push({ task: t, bills: open.filter((b) => b.current === t.code && mine(b)).reverse(), coming, done });
+      // Checking: people who can be picked as the second checker.
+      const partners = prev && t.kind === 'startend' ? db.prepare('SELECT id, name, tasks FROM users WHERE active = 1 AND id != ? ORDER BY name').all(u.id)
+        .filter((x) => userTasks(x).includes(t.code)).map(({ id, name }) => ({ id, name })) : [];
+      out.push({ task: t, bills: open.filter((b) => b.current === t.code && mine(b)).reverse(), coming, done, partners });
     }
     send(res, 200, out);
   },
@@ -443,7 +447,7 @@ const routes = {
   },
   // Press a button on a bill: action = start | end | done (single timestamp).
   'POST /api/stage': async (req, res, u) => {
-    const { bill_id, task_code, action, prev_qty } = await readBody(req);
+    const { bill_id, task_code, action, prev_qty, partner_id } = await readBody(req);
     const task = db.prepare('SELECT * FROM tasks WHERE code = ? AND stage_order IS NOT NULL').get(task_code);
     if (!task) fail(400, 'Unknown stage');
     const proxyEnd = action === 'end' && u.can_proxy && !u.entered_by;
@@ -456,8 +460,19 @@ const routes = {
     if (action === 'start') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
       if (e && e.start_at) fail(400, `Already started by ${e.start_by_name}`);
+      // Optional second checker picked from the list.
+      let partner = null;
+      if (partner_id && task.code !== stages()[0].code) {
+        partner = db.prepare('SELECT * FROM users WHERE id = ? AND active = 1').get(partner_id);
+        if (!partner || partner.id === u.id || !userTasks(partner).includes(task.code)) fail(400, 'Choose who you are checking with');
+        const pb = busyBills(partner)[0];
+        if (pb) fail(400, `${partner.name} is busy with bill ${pb.bill_no}`);
+        const pw = db.prepare(`SELECT t.code, t.name, t.count_label FROM entries e JOIN tasks t ON t.code = e.task_code WHERE e.bill_id IS NULL AND e.start_by = ? AND e.end_at IS NULL`).get(partner.id);
+        if (pw && pw.count_label) fail(400, `${partner.name} must first end ${pw.code} ${pw.name} (needs the number of ${pw.count_label})`);
+      }
       startingBill(u, prev_qty, task.code);
-      db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by, entered_by) VALUES (?, ?, ?, ?, ?)').run(bill.id, task.code, t, u.id, u.entered_by ?? null);
+      if (partner && !MANUAL_END.includes(runningWork(partner))) endOpenWork(partner);
+      db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by, entered_by, partner_by) VALUES (?, ?, ?, ?, ?, ?)').run(bill.id, task.code, t, u.id, u.entered_by ?? null, partner ? partner.id : null);
     } else if (action === 'join') {
       if (task.kind !== 'startend' || task.code === stages()[0].code) fail(400, 'Only checking can be shared');
       if (!e || !e.start_at || e.end_at) fail(400, 'Checking has not started');
