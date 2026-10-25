@@ -572,6 +572,7 @@ const server = http.createServer(async (req, res) => {
       }
       return await handler(req, res, u, url.searchParams);
     }
+    if (url.pathname === '/sw.js') return send(res, 200, fs.readFileSync(path.join(__dirname, 'public', 'sw.js')), { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-cache' });
     const types = { '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
     const file = path.join(__dirname, 'public', path.normalize(url.pathname).replace(/^([/\\])+/, ''));
     const ext = path.extname(file);
