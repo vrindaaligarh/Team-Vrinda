@@ -341,7 +341,9 @@ const routes = {
       // For the first step: bills this person finished in the last 12 hours, with where they are now.
       const done = prev ? [] : billRows(`WHERE b.id IN (SELECT bill_id FROM entries WHERE task_code = ? AND end_by = ? AND end_at >= ?)`,
         [t.code, u.id, new Date(Date.now() - 12 * 3600e3).toISOString()]).slice(0, 40).map((b) => ({ bill_no: b.bill_no, current: b.current, end_at: b.stages[t.code].end_at }));
-      out.push({ task: t, bills: open.filter((b) => b.current === t.code).reverse(), coming, done });
+      // Preparing: staff see only the bills they started themselves; owners see all.
+      const mine = (b) => prev || u.is_admin || (b.stages[t.code] && b.stages[t.code].start_by === u.id);
+      out.push({ task: t, bills: open.filter((b) => b.current === t.code && mine(b)).reverse(), coming, done });
     }
     send(res, 200, out);
   },
@@ -388,6 +390,7 @@ const routes = {
     } else if (action === 'end') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
       if (!e || !e.start_at) fail(400, 'Press Start first');
+      if (task.code === stages()[0].code && e.start_by !== u.id && !u.is_admin) fail(403, `Only ${e.start_by_name} can end this bill`);
       db.prepare('UPDATE entries SET end_at = ?, end_by = ? WHERE id = ?').run(t, u.id, e.id);
     } else if (action === 'done') {
       if (task.kind !== 'single') fail(400, 'This stage needs Start and End');
