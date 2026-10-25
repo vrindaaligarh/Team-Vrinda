@@ -345,6 +345,16 @@ const routes = {
     }
     send(res, 200, out);
   },
+  // Final verification tab: bills with every step but the last done, plus ones finished in the last 24 hours.
+  'GET /api/final': async (req, res, u) => {
+    const st = stages(), last = st[st.length - 1];
+    if (!canDo(u, last.code)) fail(403, 'Final verification is not in your login');
+    const waiting = billRows('WHERE b.id NOT IN (SELECT bill_id FROM entries WHERE task_code = ? AND bill_id IS NOT NULL AND end_at IS NOT NULL)', [last.code])
+      .filter((b) => b.current === last.code).reverse();
+    const done = billRows('WHERE b.id IN (SELECT bill_id FROM entries WHERE task_code = ? AND end_at >= ?)', [last.code, new Date(Date.now() - 24 * 3600e3).toISOString()])
+      .sort((a, b) => (b.stages[last.code].end_at > a.stages[last.code].end_at ? 1 : -1)).slice(0, 100);
+    send(res, 200, { stages: st, waiting, done });
+  },
   // First stage: enter a bill number and press Start.
   'POST /api/bills': async (req, res, u) => {
     const first = stages()[0];

@@ -156,6 +156,7 @@ function renderLogin() {
 // ---------- shell ----------
 function tabs() {
   const t = [['other', 'Work'], ['mine', 'My Jobs']];
+  if (state.me.is_admin || state.me.tasks.includes('FR')) t.push(['final', 'Final Verification']);
   if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['status', 'Staff Status'], ['fixes', 'Fix Requests']);
   if (state.me.is_admin) t.push(['staff', 'Staff'], ['codes', 'Task Codes']);
   return t;
@@ -175,7 +176,7 @@ function render() {
   $('#lo').onclick = async () => { await api('POST', '/api/logout'); state.me = null; render(); };
   $('#pw').onclick = changePassword;
   loadTab();
-  if (['all', 'other', 'status'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
+  if (['all', 'other', 'status', 'final'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
 }
 async function changePassword() {
   const oldPassword = prompt('Current password'); if (oldPassword == null) return;
@@ -185,7 +186,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, mine: viewMine, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, mine: viewMine, final: viewFinal, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -424,6 +425,24 @@ async function viewMine(m) {
       ${!r.end_at ? '<span class="pill amber">In progress</span>' : r.verified_at ? `<span class="pill green">✓ Verified by ${esc(r.verified_by_name)}</span> <small class="sub">${fmtTime(r.verified_at)}</small>` : '<span class="pill gray">Waiting for verification</span>'}</div></div>`).join('') || '<p class="empty">No jobs on this day.</p>'}
     </section>`;
   $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
+}
+
+// ---------- Final verification: bills with all three steps done, one Done button ----------
+async function viewFinal(m) {
+  const { stages: st, waiting, done } = await api('GET', '/api/final');
+  const last = st[st.length - 1], before = st.slice(0, -1);
+  const steps = (b) => before.map((t) => { const e = b.stages[t.code] || {}; return `<span class="pill green">✓ ${t.code}</span> ${esc(e.end_by_name || '')} ${fmtTime(e.end_at)}`; }).join(' &nbsp; ');
+  m.innerHTML = `<section class="card"><h2>Waiting for final verification · ${waiting.length}</h2>
+    <p class="sub">These bills have finished ${before.map((t) => esc(t.name)).join(', ')}. Check the bill on the computer and press Done.</p>
+    <input id="billsearch" class="billsearch" placeholder="Find bill or challan no." autocapitalize="characters" autocomplete="off">
+    ${waiting.map((b) => `<div class="bill" data-no="${esc(b.bill_no)}"><div class="no">#${esc(b.bill_no)}</div><div class="info">${steps(b)}</div>
+      <button class="btn green" data-done="${b.id}">Done</button></div>`).join('') || '<p class="empty">No bills waiting.</p>'}
+    </section>
+    <section class="card"><h2>Verified in the last 24 hours · ${done.length}</h2>
+    ${done.map((b) => { const e = b.stages[last.code]; return `<div class="bill" data-no="${esc(b.bill_no)}"><div class="no">#${esc(b.bill_no)}</div><div class="info"><span class="pill green">✓ Done</span> by ${esc(e.end_by_name)} at ${fmtTime(e.end_at)}</div></div>`; }).join('') || '<p class="empty">None yet.</p>'}
+    </section>`;
+  $('#billsearch').oninput = (e) => { const q = e.target.value.trim().toUpperCase(); m.querySelectorAll('.bill[data-no]').forEach((r) => { r.hidden = q && !r.dataset.no.includes(q); }); };
+  m.onclick = (e) => { const d = e.target.closest('button[data-done]'); if (d) act(d, () => api('POST', '/api/stage', { bill_id: +d.dataset.done, task_code: last.code, action: 'done' }), 'Marked done'); };
 }
 
 // ---------- Staff status: who hasn't logged a job ----------
