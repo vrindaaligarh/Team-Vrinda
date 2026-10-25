@@ -237,6 +237,9 @@ migrate('2026-10-25-remove-owner-work-tasks', () => {
 migrate('2026-10-25-check-partner', () => {
   db.exec('ALTER TABLE entries ADD COLUMN partner_by INTEGER REFERENCES users(id)');
 });
+migrate('2026-10-25-neha-like-mansi', () => {
+  db.prepare("UPDATE users SET can_proxy = 1 WHERE username = 'neha'").run();
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
