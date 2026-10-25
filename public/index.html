@@ -305,19 +305,23 @@ async function viewOther(m) {
   // Search a bill across every step and press its button right here.
   const find = $('#findbill');
   if (find) {
-    const showFind = () => {
+    // Owners, MANSI and AFZAL search every open bill on the server; others search their own steps.
+    const wide = state.me.can_proxy && state.tab !== 'proxy';
+    const showFind = async () => {
       const q = find.value.trim().toUpperCase(); filters.find = q;
       const box = $('#findres'); if (!q) { box.innerHTML = ''; return; }
-      const hits = queues.flatMap(({ task, bills }) => bills.map((b) => ({ task, b })))
-        .filter(({ b }) => b.bill_no.includes(q) || b.bill_no === padBillNo(q)).slice(0, 10);
+      const hits = wide ? (await api('GET', '/api/find-bills?q=' + encodeURIComponent(q)).catch(() => [])).map((b) => ({ task: b.task, b }))
+        : queues.flatMap(({ task, bills }) => bills.map((b) => ({ task, b }))).filter(({ b }) => b.bill_no.includes(q) || b.bill_no === padBillNo(q)).slice(0, 10);
+      if (find.value.trim().toUpperCase() !== q) return;
+      const mine = (code) => queues.some((x) => x.task.code === code);
       box.innerHTML = hits.map(({ task, b }) => {
         const e = b.stages[task.code];
-        const btn = task.kind === 'single' ? `<button class="btn green" data-a="done" data-b="${b.id}" data-t="${task.code}">${task.code === 'FR' ? 'Final Ready' : task.code === 'PK' ? 'Packed now' : 'Done now'}</button>`
+        const btn = task.kind === 'single' ? (!mine(task.code) ? '' : `<button class="btn green" data-a="done" data-b="${b.id}" data-t="${task.code}">${task.code === 'FR' ? 'Final Ready' : task.code === 'PK' ? 'Packed now' : 'Done now'}</button>`)
           : e && e.start_at ? `<button class="btn amber" data-a="end" data-b="${b.id}" data-t="${task.code}">End</button>`
-          : busy || ownerView ? '' : `<button class="btn" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`;
+          : busy || ownerView || !mine(task.code) ? '' : `<button class="btn" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`;
         const info = e && e.start_at ? `<span class="pill amber">${task.code} in progress</span> ${esc(e.start_by_name)}${e.partner_name ? ' + ' + esc(e.partner_name) : ''} since ${fmtTime(e.start_at)} · ${ago(e.start_at)}` : `<span class="pill gray">Waiting for ${task.code}</span> ${esc(task.name)}`;
         return `<div class="bill"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div><div class="info">${info}</div>${btn}</div>`;
-      }).join('') || '<p class="empty">No open bill with that number in your steps.</p>';
+      }).join('') || '<p class="empty">No open bill with that number.</p>';
     };
     find.oninput = showFind; showFind();
   }

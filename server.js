@@ -424,12 +424,22 @@ const routes = {
     if (!u.can_proxy) fail(403, 'Not allowed');
     send(res, 200, db.prepare('SELECT id, name FROM users WHERE active = 1 AND is_admin = 0 ORDER BY name').all());
   },
+  // Bill search for owners, MANSI and AFZAL: any open bill, at any step.
+  'GET /api/find-bills': async (req, res, u, q) => {
+    if (!u.can_proxy) fail(403, 'Not allowed');
+    const term = String(q.get('q') || '').trim().toUpperCase();
+    if (term.length < 2) return send(res, 200, []);
+    const st = stages();
+    const rows = billRows('WHERE b.bill_no LIKE ? OR b.bill_no = ?', ['%' + term + '%', padBillNo(term)]).filter((b) => b.current !== 'DONE').slice(0, 10);
+    send(res, 200, rows.map((b) => ({ ...b, task: st.find((t) => t.code === b.current) })));
+  },
   // Press a button on a bill: action = start | end | done (single timestamp).
   'POST /api/stage': async (req, res, u) => {
     const { bill_id, task_code, action, prev_qty } = await readBody(req);
     const task = db.prepare('SELECT * FROM tasks WHERE code = ? AND stage_order IS NOT NULL').get(task_code);
     if (!task) fail(400, 'Unknown stage');
-    if (!canDoStage(u, task.code)) fail(403, 'This stage is not in your login');
+    const proxyEnd = action === 'end' && u.can_proxy && !u.entered_by;
+    if (!canDoStage(u, task.code) && !proxyEnd) fail(403, 'This stage is not in your login');
     const [bill] = billRows('WHERE b.id = ?', [bill_id]);
     if (!bill) fail(404, 'Bill not found');
     if (bill.current !== task.code) fail(400, `Bill ${bill.bill_no} is not waiting for ${task.name}`);
@@ -450,8 +460,10 @@ const routes = {
     } else if (action === 'end') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
       if (!e || !e.start_at) fail(400, 'Press Start first');
-      if (task.code === stages()[0].code && e.start_by !== u.id && !u.is_admin) fail(403, `Only ${e.start_by_name} can end this bill`);
-      db.prepare('UPDATE entries SET end_at = ?, end_by = ?, entered_by = COALESCE(?, entered_by) WHERE id = ?').run(t, u.id, u.entered_by ?? null, e.id);
+      if (task.code === stages()[0].code && e.start_by !== u.id && !u.is_admin && !u.can_proxy) fail(403, `Only ${e.start_by_name} can end this bill`);
+      // Ended by MANSI/AFZAL/owner for someone else: saved as the starter's end, entered by them.
+      const forOther = u.can_proxy && !u.entered_by && e.start_by !== u.id && e.partner_by !== u.id;
+      db.prepare('UPDATE entries SET end_at = ?, end_by = ?, entered_by = COALESCE(?, entered_by) WHERE id = ?').run(t, forOther ? e.start_by : u.id, forOther ? u.id : u.entered_by ?? null, e.id);
     } else if (action === 'done') {
       if (task.kind !== 'single') fail(400, 'This stage needs Start and End');
       db.prepare('INSERT INTO entries (bill_id, task_code, end_at, end_by, entered_by) VALUES (?, ?, ?, ?, ?)').run(bill.id, task.code, t, u.id, u.entered_by ?? null);
