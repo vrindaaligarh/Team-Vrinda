@@ -203,6 +203,10 @@ migrate('2026-10-24-task-counts-and-verify', () => {
   db.prepare("UPDATE tasks SET count_label = 'racks' WHERE code = 'L'").run();
   db.prepare("UPDATE tasks SET count_label = 'syrup cases' WHERE code = 'O'").run();
 });
+// Remember when each person last opened the app, for the Staff Status page.
+migrate('2026-10-25-last-seen', () => {
+  db.exec('ALTER TABLE users ADD COLUMN last_seen TEXT');
+});
 migrate('2026-10-24-work-code-u-supply', () => {
   db.prepare(`INSERT INTO tasks (code, name, kind) VALUES ('U', 'Supply', 'startend') ON CONFLICT(code) DO UPDATE SET name = excluded.name`).run();
 });
@@ -233,7 +237,9 @@ function readBody(req) {
 function currentUser(req) {
   const m = /(?:^|;\s*)sid=([a-f0-9]+)/.exec(req.headers.cookie || '');
   if (!m) return null;
-  return db.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND u.active = 1`).get(m[1]) || null;
+  const u = db.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND u.active = 1`).get(m[1]) || null;
+  if (u && (!u.last_seen || Date.now() - Date.parse(u.last_seen) > 60000)) db.prepare('UPDATE users SET last_seen = ? WHERE id = ?').run(now(), u.id);
+  return u;
 }
 // The bill this person has started (preparing or checking) but not finished yet, if any.
 const busyBill = (u) => db.prepare(`SELECT b.id AS bill_id, b.bill_no, e.task_code, e.start_at, t.name AS task_name FROM entries e
@@ -291,6 +297,7 @@ const routes = {
     if (!u || !checkPassword(String(password || ''), u.pass_hash)) fail(401, 'Wrong username or password');
     const token = crypto.randomBytes(24).toString('hex');
     db.prepare('INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)').run(token, u.id, now());
+    db.prepare('UPDATE users SET last_seen = ? WHERE id = ?').run(now(), u.id);
     const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
     send(res, 200, publicUser(u), { 'Set-Cookie': `sid=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=2592000${secure}` });
   },
@@ -441,6 +448,19 @@ const routes = {
       JOIN tasks t ON t.code = e.task_code LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users vu ON vu.id = e.verified_by
       WHERE ${where.join(' AND ')} ORDER BY e.id DESC LIMIT 500`).all(...params));
   },
+  // Who has (and hasn't) logged any job in the chosen period. Owners/managers only.
+  'GET /api/admin/staff-status': async (req, res, u, q) => {
+    const from = q.get('from') || '0000', to = q.get('to') || '9999';
+    const users = db.prepare('SELECT id, username, name, tasks, last_seen FROM users WHERE active = 1 AND is_admin = 0 ORDER BY name').all();
+    const jobs = db.prepare(`SELECT COUNT(*) AS n, MAX(COALESCE(end_at, start_at)) AS last FROM entries
+      WHERE (start_by = ?1 AND start_at >= ?2 AND start_at < ?3) OR (end_by = ?1 AND end_at >= ?2 AND end_at < ?3)`);
+    const running = db.prepare(`SELECT e.task_code, e.start_at, t.name AS task_name, b.bill_no FROM entries e JOIN tasks t ON t.code = e.task_code
+      LEFT JOIN bills b ON b.id = e.bill_id WHERE e.start_by = ? AND e.start_at IS NOT NULL AND e.end_at IS NULL ORDER BY e.id DESC LIMIT 1`);
+    send(res, 200, users.map((x) => {
+      const j = jobs.get(x.id, from, to);
+      return { id: x.id, name: x.name, username: x.username, tasks: userTasks(x), last_seen: x.last_seen, jobs: j.n, last_job: j.last, running: running.get(x.id) || null };
+    }));
+  },
   // Owner deletes a wrong work-task entry from the Task Log (bill steps use reset-stage instead).
   'POST /api/admin/delete-entry': async (req, res) => {
     const { id } = await readBody(req);
@@ -498,7 +518,7 @@ const server = http.createServer(async (req, res) => {
       const u = currentUser(req);
       if (url.pathname !== '/api/login' && url.pathname !== '/api/logout') {
         if (!u) fail(401, 'Please log in');
-        const reviewPaths = ['/api/admin/bills', '/api/admin/work'];
+        const reviewPaths = ['/api/admin/bills', '/api/admin/work', '/api/admin/staff-status'];
         if (url.pathname.startsWith('/api/admin/') && !u.is_admin && !(u.is_manager && req.method === 'GET' && reviewPaths.includes(url.pathname))) fail(403, 'Owner only');
       }
       return await handler(req, res, u, url.searchParams);

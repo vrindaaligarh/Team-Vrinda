@@ -151,7 +151,7 @@ function renderLogin() {
 // ---------- shell ----------
 function tabs() {
   const t = [['other', 'Work']];
-  if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['fixes', 'Fix Requests']);
+  if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['status', 'Staff Status'], ['fixes', 'Fix Requests']);
   if (state.me.is_admin) t.push(['staff', 'Staff'], ['codes', 'Task Codes']);
   return t;
 }
@@ -170,7 +170,7 @@ function render() {
   $('#lo').onclick = async () => { await api('POST', '/api/logout'); state.me = null; render(); };
   $('#pw').onclick = changePassword;
   loadTab();
-  if (['all', 'other'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
+  if (['all', 'other', 'status'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
 }
 async function changePassword() {
   const oldPassword = prompt('Current password'); if (oldPassword == null) return;
@@ -180,7 +180,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, all: viewAll, otherlog: viewTaskLog, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -394,6 +394,26 @@ async function viewTaskLog(m) {
 }
 
 const countCell = (r) => r.count_label ? (r.qty != null ? `<b>${r.qty}</b> ${esc(r.count_label)}` : '') : '';
+
+// ---------- Staff status: who hasn't logged a job ----------
+async function viewStatus(m) {
+  const { from, to } = dayRange(filters.day);
+  const rows = await api('GET', '/api/admin/staff-status?' + new URLSearchParams(from ? { from, to } : {}));
+  const isToday = filters.day === new Date().toLocaleDateString('en-CA');
+  const seen = (r) => r.last_seen && (!from || (r.last_seen >= from && r.last_seen < to));
+  const idle = rows.filter((r) => !r.jobs);
+  const doing = (r) => r.running ? `<span class="pill amber">${r.running.task_code}</span> ${esc(r.running.task_name)}${r.running.bill_no ? ' · ' + esc(r.running.bill_no) : ''} · ${ago(r.running.start_at)}` : '';
+  m.innerHTML = `<div class="card row"><input type="date" id="fd" value="${filters.day}"></div>
+    <section class="card fixlist"><h2>No job logged ${isToday ? 'today' : 'on ' + esc(filters.day)} · ${idle.length} of ${rows.length}</h2>
+      <p class="sub">These people have not started or finished any bill step or task${isToday ? ' yet today' : ''}.</p>
+      ${idle.map((r) => `<div class="bill"><div class="no" style="min-width:110px;font-size:16px">${esc(r.name)}</div>
+        <div class="info">${seen(r) ? `Opened the app at ${fmtTime(r.last_seen)}, but no job` : r.last_seen ? `Not opened the app ${isToday ? 'today' : 'that day'} (last ${fmtFull(r.last_seen)})` : 'Has never logged in'}</div></div>`).join('') || '<p class="empty">Everyone has logged a job.</p>'}
+    </section>
+    <section class="card scroll"><h2>Everyone</h2><table><tr><th>Employee</th><th>Jobs</th><th>Last job</th><th>Doing now</th><th>Last seen</th></tr>
+      ${rows.map((r) => `<tr><td><b>${esc(r.name)}</b><small>${esc(r.tasks.join(', '))}</small></td><td>${r.jobs || '<span class="pill amber">0</span>'}</td><td>${r.last_job ? fmtTime(r.last_job) : ''}</td><td>${doing(r)}</td><td>${r.last_seen ? fmtFull(r.last_seen) : 'Never'}</td></tr>`).join('')}
+    </table></section>`;
+  $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
+}
 
 // ---------- Fix requests ----------
 function askFix(btn) {
