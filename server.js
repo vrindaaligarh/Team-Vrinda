@@ -260,7 +260,7 @@ function currentUser(req) {
 }
 // The bill this person has started (preparing or checking) but not finished yet, if any.
 // Bills this person has started but not finished (several are allowed while preparing).
-const busyBills = (u) => db.prepare(`SELECT b.id AS bill_id, b.bill_no, e.task_code, e.start_at, t.name AS task_name FROM entries e
+const busyBills = (u) => db.prepare(`SELECT b.id AS bill_id, b.bill_no, b.items, e.task_code, e.start_at, t.name AS task_name FROM entries e
   JOIN bills b ON b.id = e.bill_id JOIN tasks t ON t.code = e.task_code
   WHERE e.start_by = ? AND e.start_at IS NOT NULL AND e.end_at IS NULL ORDER BY e.id`).all(u.id);
 const busyBill = (u) => busyBills(u)[0] || null;
