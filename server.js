@@ -407,7 +407,7 @@ const routes = {
     const [bill] = billRows('WHERE b.id = ?', [body.bill_id]);
     if (!bill) fail(404, 'Bill not found');
     const st = stages(), pr = bill.stages[st[0].code];
-    if (!u.is_admin && !u.is_manager) {
+    if (!u.is_admin && !u.is_manager && !u.can_proxy) {
       if (!pr || pr.start_by !== u.id) fail(403, 'Only the person who started this bill can change it');
       if (bill.stages[st[1].code]) fail(400, 'Checking has started. Ask the manager to change it.');
     }
@@ -642,7 +642,8 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname !== '/api/login' && url.pathname !== '/api/logout') {
         if (!u) fail(401, 'Please log in');
         const reviewPaths = ['/api/admin/bills', '/api/admin/work', '/api/admin/staff-status'];
-        if (url.pathname.startsWith('/api/admin/') && !u.is_admin && !(u.is_manager && req.method === 'GET' && reviewPaths.includes(url.pathname))) fail(403, 'Owner only');
+        const canSee = (u.is_manager && reviewPaths.includes(url.pathname)) || (u.can_proxy && url.pathname === '/api/admin/bills');
+        if (url.pathname.startsWith('/api/admin/') && !u.is_admin && !(req.method === 'GET' && canSee)) fail(403, 'Owner only');
       }
       // "Enter for staff": work buttons pressed on someone else's behalf.
       const forId = Number(req.headers['x-for-user'] || 0);
