@@ -386,6 +386,24 @@ const routes = {
     db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by) VALUES (?, ?, ?, ?)').run(lastInsertRowid, first.code, t, u.id);
     send(res, 200, { ok: true });
   },
+  // Fix a wrongly typed bill no. or item count: the person who started Preparing (until Checking starts), or an owner/manager any time.
+  'POST /api/bills/edit': async (req, res, u) => {
+    const body = await readBody(req);
+    const [bill] = billRows('WHERE b.id = ?', [body.bill_id]);
+    if (!bill) fail(404, 'Bill not found');
+    const st = stages(), pr = bill.stages[st[0].code];
+    if (!u.is_admin && !u.is_manager) {
+      if (!pr || pr.start_by !== u.id) fail(403, 'Only the person who started this bill can change it');
+      if (bill.stages[st[1].code]) fail(400, 'Checking has started. Ask the manager to change it.');
+    }
+    const billNo = padBillNo(String(body.bill_no || '').trim().toUpperCase());
+    if (!BILL_NO.test(billNo)) fail(400, 'Type the 5 digits (50810), a full bill no. like T050810, or a challan no. like CA007536');
+    if (db.prepare('SELECT 1 FROM bills WHERE bill_no = ? AND id != ?').get(billNo, bill.id)) fail(400, `Bill ${billNo} already exists`);
+    const items = Number(body.items);
+    if (!Number.isInteger(items) || items < 1 || items > 9999) fail(400, 'Type the number of items');
+    db.prepare('UPDATE bills SET bill_no = ?, items = ? WHERE id = ?').run(billNo, items, bill.id);
+    send(res, 200, { ok: true, bill_no: billNo });
+  },
   // Press a button on a bill: action = start | end | done (single timestamp).
   'POST /api/stage': async (req, res, u) => {
     const { bill_id, task_code, action, prev_qty } = await readBody(req);
