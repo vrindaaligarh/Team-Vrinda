@@ -205,7 +205,7 @@ function askQty(label) {
 }
 
 // ---------- Work screen: bill steps + work tasks A-U ----------
-function stageCard(task, bills, allStages, busy, coming = []) {
+function stageCard(task, bills, allStages, busy, coming = [], doneList = []) {
   const isFirst = task.stage_order === allStages[0].stage_order;
   const prev = allStages[allStages.findIndex((t) => t.code === task.code) - 1];
   // Checking-type steps: started bills as rows with End, waiting bills as plain bill-number buttons.
@@ -239,6 +239,7 @@ function stageCard(task, bills, allStages, busy, coming = []) {
         ${coming.length ? `<p class="sub" style="margin:12px 0 6px">Still being prepared</p><div class="chips">${coming.map((c) => `<span class="chip off" data-no="${esc(c.bill_no)}">${esc(c.bill_no)}<small>${esc(c.by || '')}</small></span>`).join('')}</div>` : ''}
         ${rows ? `<p class="sub" style="margin:14px 0 0"><b>Being checked now</b></p>${rows}` : ''}`;
     })() : rows || `<p class="empty">${isFirst ? 'No bill in progress.' : 'Nothing waiting right now.'}</p>`}
+    ${isFirst && doneList.length ? `<p class="sub" style="margin:14px 0 6px"><b>My finished bills</b> · last 12 hours</p><div class="chips">${doneList.map((d) => `<span class="chip off" style="border-style:solid" data-no="${esc(d.bill_no)}">${esc(d.bill_no)}<small>Done ${fmtTime(d.end_at)} · ${d.current === 'DONE' ? 'Final ready' : 'now at ' + esc(d.current)}</small></span>`).join('')}</div>` : ''}
   </section>`;
 }
 async function viewOther(m) {
@@ -255,7 +256,7 @@ async function viewOther(m) {
   const billTiles = queues.map(({ task, bills }) => `<button class="task-tile bill-tile${state.openStage === task.code ? ' on' : ''}" data-stage="${task.code}"><span class="code">${task.code}</span><span class="grow">${esc(task.name)}</span>${bills.length ? `<span class="count">${bills.length}</span>` : ''}</button>`).join('');
   const tiles = state.tasks.filter((t) => t.stage_order == null).map((t) => `<button class="task-tile${running && running.task_code === t.code ? ' on' : ''}" data-code="${t.code}" ${running && running.task_code === t.code ? 'disabled' : ''}><span class="code">${t.code}</span><span>${esc(t.name)}</span></button>`).join('');
   m.innerHTML = `${now}
-    ${queues.length ? `<section class="card"><h2>Bill work</h2><p class="sub">Tap your bill step.</p><div class="task-grid">${billTiles}</div></section>${open ? stageCard(open.task, open.bills, allStages, busy, open.coming) : ''}` : ''}
+    ${queues.length ? `<section class="card"><h2>Bill work</h2><p class="sub">Tap your bill step.</p><div class="task-grid">${billTiles}</div></section>${open ? stageCard(open.task, open.bills, allStages, busy, open.coming, open.done) : ''}` : ''}
     <section class="card"><h2>${queues.length ? 'Other work' : 'What are you doing now?'}</h2><p class="sub">Tap a task to start it. Tapping another task ends the current one.</p>
     ${busy ? `<p class="pill amber" style="margin-bottom:10px">Finish ${busyAll.length > 1 ? 'your ' + busyAll.length + ' bills' : 'bill ' + esc(busy.bill_no)} first</p>` : ''}<div class="task-grid"${busy ? ' style="opacity:.45;pointer-events:none"' : ''}>${tiles}</div></section>
     <section class="card"><h2>My recent tasks</h2>${rows.length ? `<div class="scroll"><table><tr><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Count</th></tr>

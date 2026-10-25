@@ -334,7 +334,10 @@ const routes = {
       // Bills still at the previous step, shown greyed so people know what's coming.
       const coming = prev ? open.filter((b) => b.current === prev.code).reverse()
         .map((b) => ({ bill_no: b.bill_no, by: (b.stages[prev.code] || {}).start_by_name || null })) : [];
-      out.push({ task: t, bills: open.filter((b) => b.current === t.code).reverse(), coming });
+      // For the first step: bills this person finished in the last 12 hours, with where they are now.
+      const done = prev ? [] : billRows(`WHERE b.id IN (SELECT bill_id FROM entries WHERE task_code = ? AND end_by = ? AND end_at >= ?)`,
+        [t.code, u.id, new Date(Date.now() - 12 * 3600e3).toISOString()]).slice(0, 40).map((b) => ({ bill_no: b.bill_no, current: b.current, end_at: b.stages[t.code].end_at }));
+      out.push({ task: t, bills: open.filter((b) => b.current === t.code).reverse(), coming, done });
     }
     send(res, 200, out);
   },
