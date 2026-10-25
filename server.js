@@ -544,8 +544,8 @@ const routes = {
       WHERE e.bill_id IS NOT NULL AND e.end_at IS NULL AND e.start_at IS NOT NULL ORDER BY x.name`).all()) {
       const list = (onTask[r.task_code] ||= []); if (!list.includes(r.name)) list.push(r.name);
     }
-    // Owners, manager and desk staff: everyone who is not on any bill step or work task right now.
-    const idle = u.is_admin || u.is_manager || u.can_proxy ? db.prepare(`SELECT name FROM users WHERE active = 1 AND is_admin = 0 AND id NOT IN (
+    // Only the main owner login (admin): everyone who is not on any bill step or work task right now.
+    const idle = u.username === 'admin' && !u.entered_by ? db.prepare(`SELECT name FROM users WHERE active = 1 AND is_admin = 0 AND id NOT IN (
       SELECT start_by FROM entries WHERE end_at IS NULL AND start_at IS NOT NULL AND start_by IS NOT NULL
       UNION SELECT partner_by FROM entries WHERE end_at IS NULL AND start_at IS NOT NULL AND partner_by IS NOT NULL) ORDER BY name`).all().map((x) => x.name) : null;
     send(res, 200, { rows, busy: busyBill(u), busyAll: busyBills(u), onTask, idle });
