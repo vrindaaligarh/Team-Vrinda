@@ -286,7 +286,7 @@ async function viewOther(m) {
   const tiles = state.tasks.filter((t) => t.stage_order == null && !((state.tab === 'proxy' && state.who) || state.me).blocked.includes(t.code)).map((t) => `<button class="task-tile${running && running.task_code === t.code ? ' on' : ''}" data-code="${t.code}" ${running && running.task_code === t.code ? 'disabled' : ''}><span class="code">${t.code}</span><span class="grow">${esc(t.name)}${onTask[t.code] ? `<small class="who">${esc(onTask[t.code].join(', '))}</small>` : ''}</span>${onTask[t.code] ? `<span class="count">${onTask[t.code].length}</span>` : ''}</button>`).join('');
   m.innerHTML = `${now}
     ${queues.length ? `<section class="card"><h2>Bill work</h2>
-      <input id="findbill" class="billsearch" placeholder="Search bill no. to end its step, e.g. 50810" value="${esc(filters.find || '')}" autocapitalize="characters" autocomplete="off" style="margin-bottom:6px"><div id="findres"></div>
+      <input id="findbill" class="billsearch" placeholder="${state.me.can_proxy && state.tab !== 'proxy' ? 'Search bill no. or employee name' : 'Search bill no. to end its step, e.g. 50810'}" value="${esc(filters.find || '')}" autocapitalize="characters" autocomplete="off" style="margin-bottom:6px"><div id="findres"></div>
       <p class="sub">Tap your bill step.</p><div class="task-grid">${billTiles}</div></section>${open ? stageCard(open.task, open.bills, allStages, busy, open.coming, open.done) : ''}` : ''}
     <section class="card"><h2>${queues.length ? 'Other work' : 'What are you doing now?'}</h2><p class="sub">${ownerView ? 'Who is on each task right now. To log work for an employee, use <b>Enter for Staff</b>.' : 'Tap a task to start it. Tapping another task ends the current one.'}</p>
     ${busy ? `<p class="pill amber" style="margin-bottom:10px">Finish ${busyAll.length > 1 ? 'your ' + busyAll.length + ' bills' : 'bill ' + esc(busy.bill_no)} first</p>` : ''}<div class="task-grid"${busy ? ' style="opacity:.45;pointer-events:none"' : ownerView ? ' style="pointer-events:none"' : ''}>${tiles}</div></section>
@@ -310,7 +310,8 @@ async function viewOther(m) {
     const showFind = async () => {
       const q = find.value.trim().toUpperCase(); filters.find = q;
       const box = $('#findres'); if (!q) { box.innerHTML = ''; return; }
-      const hits = wide ? (await api('GET', '/api/find-bills?q=' + encodeURIComponent(q)).catch(() => [])).map((b) => ({ task: b.task, b }))
+      const found = wide ? await api('GET', '/api/find-bills?q=' + encodeURIComponent(q)).catch(() => ({ bills: [], work: [] })) : { work: [] };
+      const hits = wide ? found.bills.map((b) => ({ task: b.task, b }))
         : queues.flatMap(({ task, bills }) => bills.map((b) => ({ task, b }))).filter(({ b }) => b.bill_no.includes(q) || b.bill_no === padBillNo(q)).slice(0, 10);
       if (find.value.trim().toUpperCase() !== q) return;
       const mine = (code) => queues.some((x) => x.task.code === code);
@@ -321,7 +322,9 @@ async function viewOther(m) {
           : busy || ownerView || !mine(task.code) ? '' : `<button class="btn" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`;
         const info = e && e.start_at ? `<span class="pill amber">${task.code} in progress</span> ${esc(e.start_by_name)}${e.partner_name ? ' + ' + esc(e.partner_name) : ''} since ${fmtTime(e.start_at)} · ${ago(e.start_at)}` : `<span class="pill gray">Waiting for ${task.code}</span> ${esc(task.name)}`;
         return `<div class="bill"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div><div class="info">${info}</div>${btn}</div>`;
-      }).join('') || '<p class="empty">No open bill with that number.</p>';
+      }).join('') + found.work.map((w) => `<div class="bill"><div class="no" style="font-size:16px">${esc(w.name)}</div><div class="info"><span class="pill amber">${w.task_code}</span> ${esc(w.task_name)} since ${fmtTime(w.start_at)} · ${ago(w.start_at)}</div>
+        <button class="btn amber" data-endwork="${w.id}" data-user="${w.user_id}" data-label="${esc(w.count_label || '')}">End</button></div>`).join('')
+        || `<p class="empty">No open bill or running task for "${esc(q)}".</p>`;
     };
     find.oninput = showFind; showFind();
   }
@@ -335,6 +338,15 @@ async function viewOther(m) {
   }
   m.onclick = (e) => {
     const ed = e.target.closest('button[data-edit]'); if (ed) return editBill(ed);
+    // End an employee's running work task found by name (saved under them, entered by me).
+    const ew = e.target.closest('button[data-endwork]');
+    if (ew) {
+      const qty = ew.dataset.label ? askQty(ew.dataset.label) : undefined; if (qty === null) return;
+      return act(ew, async () => {
+        const r = await fetch('/api/work', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-For-User': ew.dataset.user }, body: JSON.stringify({ action: 'end', id: +ew.dataset.endwork, qty }) });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Error');
+      }, 'Task ended');
+    }
     const st = e.target.closest('button[data-stage]');
     if (st) { state.openStage = state.openStage === st.dataset.stage ? null : st.dataset.stage; filters.queue = ''; return loadTab(); }
     const a = e.target.closest('button[data-a]');

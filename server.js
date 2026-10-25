@@ -428,10 +428,16 @@ const routes = {
   'GET /api/find-bills': async (req, res, u, q) => {
     if (!u.can_proxy) fail(403, 'Not allowed');
     const term = String(q.get('q') || '').trim().toUpperCase();
-    if (term.length < 2) return send(res, 200, []);
+    if (term.length < 2) return send(res, 200, { bills: [], work: [] });
     const st = stages();
-    const rows = billRows('WHERE b.bill_no LIKE ? OR b.bill_no = ?', ['%' + term + '%', padBillNo(term)]).filter((b) => b.current !== 'DONE').slice(0, 10);
-    send(res, 200, rows.map((b) => ({ ...b, task: st.find((t) => t.code === b.current) })));
+    // Matches a bill no., or an employee name: their open bill steps and running work task.
+    const people = `SELECT id FROM users WHERE UPPER(name) LIKE ?3 AND active = 1`;
+    const rows = billRows(`WHERE b.bill_no LIKE ?1 OR b.bill_no = ?2 OR b.id IN (SELECT bill_id FROM entries WHERE bill_id IS NOT NULL AND end_at IS NULL
+      AND (start_by IN (${people}) OR partner_by IN (${people})))`, ['%' + term + '%', padBillNo(term), term + '%']).filter((b) => b.current !== 'DONE').slice(0, 15);
+    const work = db.prepare(`SELECT e.id, e.task_code, e.start_at, t.name AS task_name, t.count_label, u.id AS user_id, u.name FROM entries e
+      JOIN tasks t ON t.code = e.task_code JOIN users u ON u.id = e.start_by
+      WHERE e.bill_id IS NULL AND e.end_at IS NULL AND UPPER(u.name) LIKE ? ORDER BY u.name`).all(term + '%');
+    send(res, 200, { bills: rows.map((b) => ({ ...b, task: st.find((t) => t.code === b.current) })), work });
   },
   // Press a button on a bill: action = start | end | done (single timestamp).
   'POST /api/stage': async (req, res, u) => {
