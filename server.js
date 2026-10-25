@@ -233,6 +233,10 @@ migrate('2026-10-25-enter-for-staff', () => {
 migrate('2026-10-25-remove-owner-work-tasks', () => {
   db.prepare("DELETE FROM entries WHERE bill_id IS NULL AND start_by = (SELECT id FROM users WHERE username = 'admin')").run();
 });
+// Two people often check a bill together: the second checker joins the running check (entries.partner_by).
+migrate('2026-10-25-check-partner', () => {
+  db.exec('ALTER TABLE entries ADD COLUMN partner_by INTEGER REFERENCES users(id)');
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
@@ -272,7 +276,7 @@ function currentUser(req) {
 // Bills this person has started but not finished (several are allowed while preparing).
 const busyBills = (u) => db.prepare(`SELECT b.id AS bill_id, b.bill_no, b.items, e.task_code, e.start_at, t.name AS task_name FROM entries e
   JOIN bills b ON b.id = e.bill_id JOIN tasks t ON t.code = e.task_code
-  WHERE e.start_by = ? AND e.start_at IS NOT NULL AND e.end_at IS NULL ORDER BY e.id`).all(u.id);
+  WHERE (e.start_by = ?1 OR e.partner_by = ?1) AND e.start_at IS NOT NULL AND e.end_at IS NULL ORDER BY e.id`).all(u.id);
 const busyBill = (u) => busyBills(u)[0] || null;
 // Ends the person's running work task. Tasks with a count (racks, syrup cases) need it first.
 function endOpenWork(u, qty, id) {
@@ -307,8 +311,9 @@ function billRows(where = '', params = []) {
   if (!bills.length) return [];
   const ids = bills.map((b) => b.id);
   const entries = db.prepare(`
-    SELECT e.*, su.name AS start_by_name, eu.name AS end_by_name, vu.name AS verified_by_name, pu.name AS entered_by_name FROM entries e
+    SELECT e.*, su.name AS start_by_name, eu.name AS end_by_name, vu.name AS verified_by_name, pu.name AS entered_by_name, pa.name AS partner_name FROM entries e
     LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users eu ON eu.id = e.end_by LEFT JOIN users vu ON vu.id = e.verified_by LEFT JOIN users pu ON pu.id = e.entered_by
+    LEFT JOIN users pa ON pa.id = e.partner_by
     WHERE e.bill_id IN (${ids.map(() => '?').join(',')})`).all(...ids);
   const byBill = {};
   for (const e of entries) (byBill[e.bill_id] ||= {})[e.task_code] = e;
@@ -435,6 +440,13 @@ const routes = {
       if (e && e.start_at) fail(400, `Already started by ${e.start_by_name}`);
       startingBill(u, prev_qty, task.code);
       db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by, entered_by) VALUES (?, ?, ?, ?, ?)').run(bill.id, task.code, t, u.id, u.entered_by ?? null);
+    } else if (action === 'join') {
+      if (task.kind !== 'startend' || task.code === stages()[0].code) fail(400, 'Only checking can be shared');
+      if (!e || !e.start_at || e.end_at) fail(400, 'Checking has not started');
+      if (e.start_by === u.id || e.partner_by === u.id) fail(400, 'You are already on this bill');
+      if (e.partner_by) fail(400, `${e.start_by_name} and ${e.partner_name} are already checking it`);
+      startingBill(u, prev_qty, task.code);
+      db.prepare('UPDATE entries SET partner_by = ? WHERE id = ?').run(u.id, e.id);
     } else if (action === 'end') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
       if (!e || !e.start_at) fail(400, 'Press Start first');
@@ -480,7 +492,7 @@ const routes = {
     send(res, 200, db.prepare(`SELECT e.id, e.task_code, e.start_at, e.end_at, e.qty, e.verified_at, t.name AS task_name, t.count_label,
         b.bill_no, vu.name AS verified_by_name FROM entries e JOIN tasks t ON t.code = e.task_code
       LEFT JOIN bills b ON b.id = e.bill_id LEFT JOIN users vu ON vu.id = e.verified_by
-      WHERE (e.start_by = ?1 AND e.start_at >= ?2 AND e.start_at < ?3) OR (e.start_by IS NULL AND e.end_by = ?1 AND e.end_at >= ?2 AND e.end_at < ?3)
+      WHERE ((e.start_by = ?1 OR e.partner_by = ?1) AND e.start_at >= ?2 AND e.start_at < ?3) OR (e.start_by IS NULL AND e.end_by = ?1 AND e.end_at >= ?2 AND e.end_at < ?3)
       ORDER BY COALESCE(e.start_at, e.end_at) DESC`).all(u.id, from, to));
   },
   // Manager/owner confirms a finished job (work task or bill step) was punched correctly. undo: true clears it.
@@ -544,9 +556,9 @@ const routes = {
     const from = q.get('from') || '0000', to = q.get('to') || '9999';
     const users = db.prepare('SELECT id, username, name, tasks, last_seen FROM users WHERE active = 1 AND is_admin = 0 ORDER BY name').all();
     const jobs = db.prepare(`SELECT COUNT(*) AS n, MAX(COALESCE(end_at, start_at)) AS last FROM entries
-      WHERE (start_by = ?1 AND start_at >= ?2 AND start_at < ?3) OR (end_by = ?1 AND end_at >= ?2 AND end_at < ?3)`);
+      WHERE ((start_by = ?1 OR partner_by = ?1) AND start_at >= ?2 AND start_at < ?3) OR (end_by = ?1 AND end_at >= ?2 AND end_at < ?3)`);
     const running = db.prepare(`SELECT e.task_code, e.start_at, t.name AS task_name, b.bill_no FROM entries e JOIN tasks t ON t.code = e.task_code
-      LEFT JOIN bills b ON b.id = e.bill_id WHERE e.start_by = ? AND e.start_at IS NOT NULL AND e.end_at IS NULL ORDER BY e.id DESC LIMIT 1`);
+      LEFT JOIN bills b ON b.id = e.bill_id WHERE (e.start_by = ?1 OR e.partner_by = ?1) AND e.start_at IS NOT NULL AND e.end_at IS NULL ORDER BY e.id DESC LIMIT 1`);
     const lastEntry = db.prepare(`SELECT e.task_code, e.start_at, e.end_at, t.name AS task_name, b.bill_no FROM entries e JOIN tasks t ON t.code = e.task_code
       LEFT JOIN bills b ON b.id = e.bill_id WHERE e.start_by = ?1 OR e.end_by = ?1 ORDER BY COALESCE(e.end_at, e.start_at) DESC LIMIT 1`);
     send(res, 200, users.map((x) => {

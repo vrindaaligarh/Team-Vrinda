@@ -238,8 +238,12 @@ function stageCard(task, bills, allStages, busy, coming = [], doneList = []) {
       info = p ? `${esc(prev.name)} done by ${esc(p.end_by_name)} at ${fmtTime(p.end_at)} · waiting ${ago(p.end_at)}` : '';
       btn = `<button class="btn green" data-a="done" data-b="${b.id}" data-t="${task.code}">${task.code === 'FR' ? 'Final Ready' : task.code === 'PK' ? 'Packed now' : 'Done now'}</button>`;
     } else if (e && e.start_at) {
-      info = `<span class="pill amber">In progress</span> Started by ${esc(e.start_by_name)} at ${fmtTime(e.start_at)} · ${ago(e.start_at)}`;
-      btn = `${isFirst ? editBtn(b.id, b.bill_no, b.items) : ''}<button class="btn amber" data-a="end" data-b="${b.id}" data-t="${task.code}">End</button>`;
+      info = `<span class="pill amber">In progress</span> Started by ${esc(e.start_by_name)}${e.partner_name ? ' + ' + esc(e.partner_name) : ''} at ${fmtTime(e.start_at)} · ${ago(e.start_at)}`;
+      // Checking: a second person can join a running check.
+      const me = ((state.tab === 'proxy' && state.who) || state.me).id;
+      const join = !isFirst && !e.partner_by && e.start_by !== me && !(state.me.is_admin && state.tab !== 'proxy')
+        ? `<button class="btn ghost" data-a="join" data-b="${b.id}" data-t="${task.code}">Join</button>` : '';
+      btn = `${isFirst ? editBtn(b.id, b.bill_no, b.items) : ''}${join}<button class="btn amber" data-a="end" data-b="${b.id}" data-t="${task.code}">End</button>`;
     } else {
       info = `<span class="pill gray">To do</span> ${p ? `${esc(prev.name)} by ${esc(p.end_by_name)}, finished ${fmtTime(p.end_at)} · waiting ${ago(p.end_at)}` : ''}`;
       btn = busy ? '' : `<button class="btn" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`;
@@ -311,7 +315,7 @@ async function viewOther(m) {
         const btn = task.kind === 'single' ? `<button class="btn green" data-a="done" data-b="${b.id}" data-t="${task.code}">${task.code === 'FR' ? 'Final Ready' : task.code === 'PK' ? 'Packed now' : 'Done now'}</button>`
           : e && e.start_at ? `<button class="btn amber" data-a="end" data-b="${b.id}" data-t="${task.code}">End</button>`
           : busy || ownerView ? '' : `<button class="btn" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`;
-        const info = e && e.start_at ? `<span class="pill amber">${task.code} in progress</span> ${esc(e.start_by_name)} since ${fmtTime(e.start_at)} · ${ago(e.start_at)}` : `<span class="pill gray">Waiting for ${task.code}</span> ${esc(task.name)}`;
+        const info = e && e.start_at ? `<span class="pill amber">${task.code} in progress</span> ${esc(e.start_by_name)}${e.partner_name ? ' + ' + esc(e.partner_name) : ''} since ${fmtTime(e.start_at)} · ${ago(e.start_at)}` : `<span class="pill gray">Waiting for ${task.code}</span> ${esc(task.name)}`;
         return `<div class="bill"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div><div class="info">${info}</div>${btn}</div>`;
       }).join('') || '<p class="empty">No open bill with that number in your steps.</p>';
     };
@@ -331,8 +335,8 @@ async function viewOther(m) {
     if (st) { state.openStage = state.openStage === st.dataset.stage ? null : st.dataset.stage; filters.queue = ''; return loadTab(); }
     const a = e.target.closest('button[data-a]');
     if (a) {
-      const label = { start: 'Started', end: 'Ended', done: 'Marked' }[a.dataset.a];
-      const extra = a.dataset.a === 'start' ? prevQty() : {}; if (!extra) return;
+      const label = { start: 'Started', end: 'Ended', done: 'Marked', join: 'Joined' }[a.dataset.a];
+      const extra = ['start', 'join'].includes(a.dataset.a) ? prevQty() : {}; if (!extra) return;
       return act(a, () => api('POST', '/api/stage', { bill_id: +a.dataset.b, task_code: a.dataset.t, action: a.dataset.a, ...extra }), label + ' at ' + fmtTime(new Date().toISOString()));
     }
     const c = e.target.closest('button[data-code]');
@@ -382,7 +386,7 @@ async function viewAll(m) {
           const tick = e.verified_at ? ' <span class="pill green" title="Verified by ' + esc(e.verified_by_name) + '">✓</span>' : '';
           const via = e.entered_by_name ? ` · entered by ${esc(e.entered_by_name)}` : '';
           if (s.kind === 'single') return `<td>${fmtTime(e.end_at)}${tick}<small>${esc(e.end_by_name)}${via}</small></td>`;
-          const by = e.end_by && e.end_by !== e.start_by ? `${esc(e.start_by_name)} / ${esc(e.end_by_name)}` : esc(e.start_by_name);
+          const by = (e.end_by && e.end_by !== e.start_by && e.end_by !== e.partner_by ? `${esc(e.start_by_name)} / ${esc(e.end_by_name)}` : esc(e.start_by_name)) + (e.partner_name ? ' + ' + esc(e.partner_name) : '');
           return `<td>${fmtTime(e.start_at)} – ${e.end_at ? fmtTime(e.end_at) : '…'}${tick}<small>${e.end_at ? dur(e.start_at, e.end_at) + ' · ' : ''}${by}${via}</small></td>`;
         }).join('');
         const last = b.stages[stages.at(-1).code];
