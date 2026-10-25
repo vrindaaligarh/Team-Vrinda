@@ -61,6 +61,8 @@
   .stat { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
   .stat b { display: block; font-size: 22px; }
   .stat span { color: var(--muted); font-size: 12px; }
+  .items-in { width: 84px; }
+  .no small.items { display: block; font-size: 12px; font-weight: 600; color: var(--muted, #667); }
   #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; display: none; z-index: 10; max-width: 90vw; }
   #updating { position: fixed; left: 0; right: 0; top: 0; background: #9a6700; color: #fff; padding: 12px 16px; text-align: center; font-weight: 600; z-index: 20; }
   #toast.err { background: var(--red); color: #fff; }
@@ -240,18 +242,18 @@ function stageCard(task, bills, allStages, busy, coming = [], doneList = []) {
       info = `<span class="pill gray">To do</span> ${p ? `${esc(prev.name)} by ${esc(p.end_by_name)}, finished ${fmtTime(p.end_at)} · waiting ${ago(p.end_at)}` : ''}`;
       btn = busy ? '' : `<button class="btn" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`;
     }
-    return `<div class="bill" data-no="${esc(b.bill_no.toUpperCase())}"><div class="no">#${esc(b.bill_no)}</div><div class="info">${info}</div>${btn}</div>`;
+    return `<div class="bill" data-no="${esc(b.bill_no.toUpperCase())}"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div><div class="info">${info}</div>${btn}</div>`;
   }).join('');
   return `<section class="card stage-panel">
     <h2><span class="code">${task.code}</span>${esc(task.name)}</h2>
-    <p class="sub">${task.kind === 'single' ? 'Find the bill and tap the button. It records the current time.' : isFirst ? 'Type the last digits of the bill (50810 becomes T050810) and press Start. You can prepare several bills at once; press End on each when done.' : 'Find the bill, press Start when you begin and End when you finish.'}</p>
-    ${isFirst ? `<form class="row newbill" style="margin-bottom:8px"><input name="no" class="grow billno"  placeholder="e.g. 50810 or CA7536" maxlength="8" autocapitalize="characters" autocomplete="off" required><button class="btn">Start</button></form>`
+    <p class="sub">${task.kind === 'single' ? 'Find the bill and tap the button. It records the current time.' : isFirst ? 'Type the last digits of the bill (50810 becomes T050810) and the number of items, then press Start. You can prepare several bills at once; press End on each when done.' : 'Find the bill, press Start when you begin and End when you finish.'}</p>
+    ${isFirst ? `<form class="row newbill" style="margin-bottom:8px"><input name="no" class="grow billno"  placeholder="Bill no. e.g. 50810" maxlength="8" autocapitalize="characters" autocomplete="off" required><input name="items" class="items-in" type="number" inputmode="numeric" min="1" max="9999" placeholder="Items" required><button class="btn">Start</button></form>`
       : `<input id="billsearch" class="billsearch" placeholder="Find bill or challan no." value="${esc(filters.queue || '')}" autocapitalize="characters" autocomplete="off">`}
     ${pick ? (() => {
       const ready = bills.filter((b) => !(b.stages[task.code] && b.stages[task.code].start_at));
       const p = prev && ((b) => b.stages[prev.code] || {});
       return `<p class="sub" style="margin:12px 0 6px"><b>Ready for ${esc(task.name)}</b> · tap a bill number to start</p>
-        ${ready.length ? `<div class="chips">${ready.map((b) => `<button class="chip" data-no="${esc(b.bill_no)}" ${busy ? 'disabled' : `data-a="start" data-b="${b.id}" data-t="${task.code}"`}>${esc(b.bill_no)}<small>${esc(p(b).end_by_name || '')} · ${fmtTime(p(b).end_at)}</small></button>`).join('')}</div>` : '<p class="empty">No prepared bills waiting.</p>'}
+        ${ready.length ? `<div class="chips">${ready.map((b) => `<button class="chip" data-no="${esc(b.bill_no)}" ${busy ? 'disabled' : `data-a="start" data-b="${b.id}" data-t="${task.code}"`}>${esc(b.bill_no)}<small>${b.items ? b.items + ' items · ' : ''}${esc(p(b).end_by_name || '')} · ${fmtTime(p(b).end_at)}</small></button>`).join('')}</div>` : '<p class="empty">No prepared bills waiting.</p>'}
         ${coming.length ? `<p class="sub" style="margin:12px 0 6px">Still being prepared</p><div class="chips">${coming.map((c) => `<span class="chip off" data-no="${esc(c.bill_no)}">${esc(c.bill_no)}<small>${esc(c.by || '')}</small></span>`).join('')}</div>` : ''}
         ${rows ? `<p class="sub" style="margin:14px 0 0"><b>Being checked now</b></p>${rows}` : ''}`;
     })() : rows || `<p class="empty">${isFirst ? 'No bill in progress.' : 'Nothing waiting right now.'}</p>`}
@@ -283,8 +285,10 @@ async function viewOther(m) {
     e.preventDefault();
     const no = padBillNo(f.no.value.trim().toUpperCase());
     if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Type the 5 digits (50810), a full bill no. like T050810, or a challan no. like CA007536', true);
+    const items = Number(f.items.value);
+    if (!Number.isInteger(items) || items < 1) return toast('Type the number of items', true);
     const extra = prevQty(); if (!extra) return;
-    act(f.querySelector('button'), () => api('POST', '/api/bills', { bill_no: no, ...extra }), `${/^[A-Z]{2}/.test(no) ? 'Challan' : 'Bill'} ${no} started`);
+    act(f.querySelector('button'), () => api('POST', '/api/bills', { bill_no: no, items, ...extra }), `${/^[A-Z]{2}/.test(no) ? 'Challan' : 'Bill'} ${no} started`);
   });
   m.querySelectorAll('input.billno').forEach((i) => i.oninput = () => { i.value = i.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); });
   const search = $('#billsearch');
@@ -343,7 +347,7 @@ async function viewAll(m) {
       <div class="stat"><b>${avgTotal}</b><span>Avg start to final ready</span></div>
     </div>
     <div class="card scroll"><table>
-      <tr><th>Bill</th>${stages.map((s) => `<th>${s.code} · ${esc(s.name)}</th>`).join('')}<th>Total</th><th>Status</th></tr>
+      <tr><th>Bill</th><th>Items</th>${stages.map((s) => `<th>${s.code} · ${esc(s.name)}</th>`).join('')}<th>Total</th><th>Status</th></tr>
       ${bills.map((b) => {
         const cells = stages.map((s) => {
           const e = b.stages[s.code];
@@ -356,15 +360,15 @@ async function viewAll(m) {
         const last = b.stages[stages.at(-1).code];
         const status = b.current === 'DONE' ? '<span class="pill green">Ready</span>' : `<span class="pill amber">At ${b.current} ${esc(name(b.current))}</span>`;
         const done = stages.filter((s) => b.stages[s.code]);
-        const detail = filters.open === b.id ? `<tr class="detail"><td colspan="${stages.length + 3}">
+        const detail = filters.open === b.id ? `<tr class="detail"><td colspan="${stages.length + 4}">
           Bill #${esc(b.bill_no)} created ${fmtFull(b.created_at)} by ${esc(b.created_by_name)}. Verify each step that was punched right:
           <div class="row" style="margin:8px 0 10px">${done.filter((s) => b.stages[s.code].end_at).map((s) => { const e = b.stages[s.code]; return e.verified_at ? `<span class="pill green">${s.code} verified by ${esc(e.verified_by_name)}</span> <a href="#" data-unverify="${e.id}">undo</a>` : `<button class="btn green small" data-verify="${e.id}">Verify ${s.code}</button>`; }).join('') || '<span class="sub">No finished steps yet.</span>'}</div>
           Or ask the person to fix a wrong punch:
           <div class="row" style="margin-top:8px">${done.map((s) => { const e = b.stages[s.code]; return `<button class="btn ghost small" data-fix="${e.id}" data-who="${esc(e.start_by_name || e.end_by_name)}">Ask ${esc(e.start_by_name || e.end_by_name)} to fix ${s.code}</button>`; }).join('')}</div>
           ${state.me.is_admin ? `<p class="sub" style="margin:10px 0 0">Owner: undo a stage (this also clears the stages after it):</p>
           <div class="row" style="margin-top:6px">${done.map((s) => `<button class="btn ghost small" data-reset="${s.code}" data-b="${b.id}">Undo ${s.code}${s === stages[0] ? ' (delete bill)' : ''}</button>`).join('')}</div>` : ''}</td></tr>` : '';
-        return `<tr class="click" data-open="${b.id}"><td><b>#${esc(b.bill_no)}</b><small>${fmtDate(b.created_at)}</small></td>${cells}<td>${last && last.end_at ? dur(b.created_at, last.end_at) : ''}</td><td>${status}</td></tr>${detail}`;
-      }).join('') || `<tr><td colspan="${stages.length + 3}" class="empty">No bills for this day.</td></tr>`}
+        return `<tr class="click" data-open="${b.id}"><td><b>#${esc(b.bill_no)}</b><small>${fmtDate(b.created_at)}</small></td><td>${b.items ?? ''}</td>${cells}<td>${last && last.end_at ? dur(b.created_at, last.end_at) : ''}</td><td>${status}</td></tr>${detail}`;
+      }).join('') || `<tr><td colspan="${stages.length + 4}" class="empty">No bills for this day.</td></tr>`}
     </table></div>`;
   $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
   $('#fall').onclick = () => { filters.day = ''; loadTab(); };
@@ -385,11 +389,11 @@ async function viewAll(m) {
   };
 }
 function downloadCsv(stages, bills) {
-  const head = ['Bill No', 'Created'];
+  const head = ['Bill No', 'Items', 'Created'];
   stages.forEach((s) => s.kind === 'single' ? head.push(`${s.code} Time`, `${s.code} By`) : head.push(`${s.code} Start`, `${s.code} End`, `${s.code} Minutes`, `${s.code} By`));
   const lines = [head];
   for (const b of bills) {
-    const row = [b.bill_no, fmtFull(b.created_at)];
+    const row = [b.bill_no, b.items ?? '', fmtFull(b.created_at)];
     for (const s of stages) {
       const e = b.stages[s.code] || {};
       if (s.kind === 'single') row.push(fmtFull(e.end_at), e.end_by_name || '');
@@ -426,6 +430,7 @@ async function viewTaskLog(m) {
   $('#fall').onclick = () => { filters.day = ''; loadTab(); };
 }
 
+const itemsTag = (b) => b.items ? `<small class="items">${b.items} items</small>` : '';
 const countCell = (r) => r.count_label ? (r.qty != null ? `<b>${r.qty}</b> ${esc(r.count_label)}` : '') : '';
 
 // ---------- My Jobs: the person's own jobs with verification ticks ----------
@@ -450,7 +455,7 @@ async function viewFinal(m) {
   m.innerHTML = `<section class="card"><h2>Waiting for final verification · ${waiting.length}</h2>
     <p class="sub">These bills have finished ${before.map((t) => esc(t.name)).join(', ')}. Check the bill on the computer and press Done.</p>
     <input id="billsearch" class="billsearch" placeholder="Find bill or challan no." autocapitalize="characters" autocomplete="off">
-    ${waiting.map((b) => `<div class="bill" data-no="${esc(b.bill_no)}"><div class="no">#${esc(b.bill_no)}</div><div class="info">${steps(b)}</div>
+    ${waiting.map((b) => `<div class="bill" data-no="${esc(b.bill_no)}"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div><div class="info">${steps(b)}</div>
       <button class="btn green" data-done="${b.id}">Done</button></div>`).join('') || '<p class="empty">No bills waiting.</p>'}
     </section>
     <section class="card"><h2>Verified in the last 24 hours · ${done.length}</h2>

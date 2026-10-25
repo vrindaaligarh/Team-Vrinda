@@ -219,6 +219,10 @@ migrate('2026-10-25-owais-no-checking-packing', () => {
   const o = db.prepare("SELECT id, tasks FROM users WHERE username = 'owais'").get();
   if (o) db.prepare("UPDATE users SET tasks = ?, blocked = 'I' WHERE id = ?").run(o.tasks.split(',').filter((c) => c && c !== 'CH' && c !== 'PK').join(','), o.id);
 });
+// Number of items on each bill, typed with the bill no. when Preparing starts.
+migrate('2026-10-25-bill-items', () => {
+  db.exec('ALTER TABLE bills ADD COLUMN items INTEGER');
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
@@ -374,9 +378,11 @@ const routes = {
     const billNo = padBillNo(String(body.bill_no || '').trim().toUpperCase());
     if (!BILL_NO.test(billNo)) fail(400, 'Type the 5 digits (50810), a full bill no. like T050810, or a challan no. like CA007536');
     if (db.prepare('SELECT 1 FROM bills WHERE bill_no = ?').get(billNo)) fail(400, `Bill ${billNo} already exists`);
+    const items = Number(body.items);
+    if (!Number.isInteger(items) || items < 1 || items > 9999) fail(400, 'Type the number of items');
     startingBill(u, body.prev_qty, first.code);
     const t = now();
-    const { lastInsertRowid } = db.prepare('INSERT INTO bills (bill_no, created_at, created_by) VALUES (?, ?, ?)').run(billNo, t, u.id);
+    const { lastInsertRowid } = db.prepare('INSERT INTO bills (bill_no, items, created_at, created_by) VALUES (?, ?, ?, ?)').run(billNo, items, t, u.id);
     db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by) VALUES (?, ?, ?, ?)').run(lastInsertRowid, first.code, t, u.id);
     send(res, 200, { ok: true });
   },
