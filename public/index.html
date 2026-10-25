@@ -174,8 +174,8 @@ function renderLogin() {
 // ---------- shell ----------
 function tabs() {
   const t = [['other', 'Work'], ['mine', 'My Jobs']];
+  if (state.me.can_proxy) t.splice(1, 0, ['proxy', 'Enter for Staff']);
   if (state.me.is_admin || state.me.tasks.includes('FR')) t.push(['final', 'Final Verification']);
-  if (state.me.can_proxy) t.push(['proxy', 'Enter for Staff']);
   if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['status', 'Staff Status'], ['fixes', 'Fix Requests']);
   if (state.me.is_admin) t.push(['staff', 'Staff'], ['codes', 'Task Codes']);
   return t;
@@ -268,6 +268,8 @@ async function viewOther(m) {
   const running = rows.find((r) => !r.end_at);
   // Ending the running task (by starting something else) needs its count first.
   const stageCodes = queues.map((q) => q.task.code);
+  // Owners see the work tiles only as a live board; they log work for staff from Enter for Staff.
+  const ownerView = state.me.is_admin && state.tab !== 'proxy';
   const prevQty = () => { if (!running || !running.count_label) return {}; const n = askQty(running.count_label); return n === null ? null : { prev_qty: n }; };
   // On I Polythene Packing: open the packing list straight away.
   if (running && running.task_code === 'I' && queues.some((q) => q.task.code === 'PK') && state.autoPK !== running.id) { state.openStage = 'PK'; state.autoPK = running.id; }
@@ -280,8 +282,8 @@ async function viewOther(m) {
   const tiles = state.tasks.filter((t) => t.stage_order == null && !((state.tab === 'proxy' && state.who) || state.me).blocked.includes(t.code)).map((t) => `<button class="task-tile${running && running.task_code === t.code ? ' on' : ''}" data-code="${t.code}" ${running && running.task_code === t.code ? 'disabled' : ''}><span class="code">${t.code}</span><span class="grow">${esc(t.name)}${onTask[t.code] ? `<small class="who">${esc(onTask[t.code].join(', '))}</small>` : ''}</span>${onTask[t.code] ? `<span class="count">${onTask[t.code].length}</span>` : ''}</button>`).join('');
   m.innerHTML = `${now}
     ${queues.length ? `<section class="card"><h2>Bill work</h2><p class="sub">Tap your bill step.</p><div class="task-grid">${billTiles}</div></section>${open ? stageCard(open.task, open.bills, allStages, busy, open.coming, open.done) : ''}` : ''}
-    <section class="card"><h2>${queues.length ? 'Other work' : 'What are you doing now?'}</h2><p class="sub">Tap a task to start it. Tapping another task ends the current one.</p>
-    ${busy ? `<p class="pill amber" style="margin-bottom:10px">Finish ${busyAll.length > 1 ? 'your ' + busyAll.length + ' bills' : 'bill ' + esc(busy.bill_no)} first</p>` : ''}<div class="task-grid"${busy ? ' style="opacity:.45;pointer-events:none"' : ''}>${tiles}</div></section>
+    <section class="card"><h2>${queues.length ? 'Other work' : 'What are you doing now?'}</h2><p class="sub">${ownerView ? 'Who is on each task right now. To log work for an employee, use <b>Enter for Staff</b>.' : 'Tap a task to start it. Tapping another task ends the current one.'}</p>
+    ${busy ? `<p class="pill amber" style="margin-bottom:10px">Finish ${busyAll.length > 1 ? 'your ' + busyAll.length + ' bills' : 'bill ' + esc(busy.bill_no)} first</p>` : ''}<div class="task-grid"${busy ? ' style="opacity:.45;pointer-events:none"' : ownerView ? ' style="pointer-events:none"' : ''}>${tiles}</div></section>
     <section class="card"><h2>My recent tasks</h2>${rows.length ? `<div class="scroll"><table><tr><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Count</th></tr>
     ${rows.map((r) => `<tr><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : '<span class="pill amber">Running</span>'}</td><td>${dur(r.start_at, r.end_at)}</td><td>${countCell(r)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No tasks yet.</p>'}</section>`;
   m.querySelectorAll('form.newbill').forEach((f) => f.onsubmit = (e) => {

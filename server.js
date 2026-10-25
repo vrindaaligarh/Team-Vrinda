@@ -229,6 +229,10 @@ migrate('2026-10-25-enter-for-staff', () => {
   db.exec('ALTER TABLE entries ADD COLUMN entered_by INTEGER REFERENCES users(id)');
   db.prepare("UPDATE users SET can_proxy = 1 WHERE is_admin = 1 OR username IN ('mansi', 'afzal')").run();
 });
+// The owner tapped work tiles on their own Work screen by mistake; remove those (user asked 2026-10-25).
+migrate('2026-10-25-remove-owner-work-tasks', () => {
+  db.prepare("DELETE FROM entries WHERE bill_id IS NULL AND start_by = (SELECT id FROM users WHERE username = 'admin')").run();
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
@@ -458,6 +462,7 @@ const routes = {
     if (action === 'start') {
       if (!db.prepare('SELECT 1 FROM tasks WHERE code = ? AND stage_order IS NULL').get(task_code)) fail(400, 'Unknown task');
       if ((u.blocked || '').split(',').includes(task_code)) fail(403, 'This task is not in your login');
+      if (u.is_admin) fail(403, 'Owners do not log work tasks. Use Enter for Staff to log work for an employee.');
       const busy = busyBill(u);
       if (busy) fail(400, `Finish bill ${busy.bill_no} first`);
       // Starting a new task ends whatever this person was doing before.
