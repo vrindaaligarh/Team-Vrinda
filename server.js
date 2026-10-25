@@ -240,6 +240,9 @@ migrate('2026-10-25-check-partner', () => {
 migrate('2026-10-25-neha-like-mansi', () => {
   db.prepare("UPDATE users SET can_proxy = 1 WHERE username = 'neha'").run();
 });
+migrate('2026-10-25-riya-like-mansi', () => {
+  db.prepare("UPDATE users SET can_proxy = 1, tasks = (SELECT tasks FROM users WHERE username = 'mansi') WHERE username = 'riya'").run();
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
