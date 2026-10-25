@@ -98,6 +98,9 @@
   .chip { display: flex; flex-direction: column; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 2px solid var(--primary); background: var(--card); color: var(--text); font: inherit; font-size: 17px; font-weight: 700; cursor: pointer; }
   .chip small { font-size: 11px; font-weight: 500; color: var(--muted); margin-top: 2px; }
   .chip:disabled { opacity: .45; cursor: default; }
+  .chip.tools { cursor: default; }
+  .chip.tools .row { margin-top: 6px; gap: 4px; }
+  .chip.tools .btn { padding: 4px 8px; font-size: 12px; }
   .chip.off { border: 1px dashed var(--line); color: var(--muted); font-weight: 600; cursor: default; }
   .stage-panel { border: 2px solid var(--primary); }
   button.btn.del { color: var(--red); border-color: var(--red); }
@@ -227,6 +230,7 @@ function askQty(label) {
 
 // ---------- Work screen: bill steps + work tasks A-U ----------
 function stageCard(task, bills, allStages, busy, coming = [], doneList = [], partners = []) {
+  const ownerView = state.me.is_admin && state.tab !== 'proxy';
   const isFirst = task.stage_order === allStages[0].stage_order;
   const prev = allStages[allStages.findIndex((t) => t.code === task.code) - 1];
   // Checking-type steps: started bills as rows with End, waiting bills as plain bill-number buttons.
@@ -249,7 +253,7 @@ function stageCard(task, bills, allStages, busy, coming = [], doneList = [], par
       info = `<span class="pill gray">To do</span> ${p ? `${esc(prev.name)} by ${esc(p.end_by_name)}, finished ${fmtTime(p.end_at)} · waiting ${ago(p.end_at)}` : ''}`;
       btn = busy ? '' : `<button class="btn" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`;
     }
-    return `<div class="bill" data-no="${esc(b.bill_no.toUpperCase())}"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div><div class="info">${info}</div>${btn}</div>`;
+    return `<div class="bill" data-no="${esc(b.bill_no.toUpperCase())}"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div><div class="info">${info}</div>${isFirst ? allDoneBtn(b) : billTools(b)}${btn}</div>`;
   }).join('');
   return `<section class="card stage-panel">
     <h2><span class="code">${task.code}</span>${esc(task.name)}</h2>
@@ -262,8 +266,13 @@ function stageCard(task, bills, allStages, busy, coming = [], doneList = [], par
       return `${partners.length ? `<label class="sub" style="display:block;margin:12px 0 4px"><b>Checking with</b> (if two people check together, choose the other person first)</label>
         <select id="partner" style="width:100%"><option value="">Only me</option>${partners.map((x) => `<option value="${x.id}" ${x.id === state.partner ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : ''}
         <p class="sub" style="margin:12px 0 6px"><b>Ready for ${esc(task.name)}</b> · tap a bill number to start</p>
-        ${ready.length ? `<div class="chips">${ready.map((b) => `<button class="chip" data-no="${esc(b.bill_no)}" ${busy ? 'disabled' : `data-a="start" data-b="${b.id}" data-t="${task.code}"`}>${esc(b.bill_no)}<small>${b.items ? b.items + ' items · ' : ''}${esc(p(b).end_by_name || '')} · ${fmtTime(p(b).end_at)}</small></button>`).join('')}</div>` : '<p class="empty">No prepared bills waiting.</p>'}
-        ${coming.length ? `<p class="sub" style="margin:12px 0 6px">Still being prepared</p><div class="chips">${coming.map((c) => `<span class="chip off" data-no="${esc(c.bill_no)}">${esc(c.bill_no)}<small>${esc(c.by || '')}</small></span>`).join('')}</div>` : ''}
+        ${ready.length ? `<div class="chips">${ready.map((b) => {
+          const sub = `<small>${b.items ? b.items + ' items · ' : ''}${esc(p(b).end_by_name || '')} · ${fmtTime(p(b).end_at)}</small>`;
+          const tools = billTools(b);
+          if (!tools) return `<button class="chip" data-no="${esc(b.bill_no)}" ${busy ? 'disabled' : `data-a="start" data-b="${b.id}" data-t="${task.code}"`}>${esc(b.bill_no)}${sub}</button>`;
+          return `<div class="chip tools" data-no="${esc(b.bill_no)}">${esc(b.bill_no)}${sub}<div class="row">${busy || ownerView ? '' : `<button class="btn small" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`}${tools}</div></div>`;
+        }).join('')}</div>` : '<p class="empty">No prepared bills waiting.</p>'}
+        ${coming.length ? `<p class="sub" style="margin:12px 0 6px">Still being prepared</p><div class="chips">${coming.map((c) => `<span class="chip off${billTools(c) ? ' tools' : ''}" data-no="${esc(c.bill_no)}">${esc(c.bill_no)}<small>${c.items ? c.items + ' items · ' : ''}${esc(c.by || '')}</small>${billTools(c) ? `<div class="row">${billTools(c)}</div>` : ''}</span>`).join('')}</div>` : ''}
         ${rows ? `<p class="sub" style="margin:14px 0 0"><b>Being checked now</b></p>${rows}` : ''}`;
     })() : rows || `<p class="empty">${isFirst ? 'No bill in progress.' : 'Nothing waiting right now.'}</p>`}
     ${isFirst && doneList.length ? `<p class="sub" style="margin:14px 0 6px"><b>My finished bills</b> · last 12 hours</p><div class="chips">${doneList.map((d) => `<span class="chip off" style="border-style:solid" data-no="${esc(d.bill_no)}">${esc(d.bill_no)}<small>Done ${fmtTime(d.end_at)} · ${d.current === 'DONE' ? 'Final ready' : 'now at ' + esc(d.current)}</small></span>`).join('')}</div>` : ''}
@@ -498,6 +507,9 @@ function allDone(btn) {
   act(btn, () => api('POST', '/api/bills/alldone', { bill_id: +btn.dataset.alldone }), `${btn.dataset.no} is final ready`);
 }
 document.addEventListener('click', (e) => { const b = e.target.closest('button[data-alldone]'); if (b) { e.stopPropagation(); allDone(b); } }, true);
+const canEditBills = () => state.me.is_admin || state.me.is_manager || state.me.can_proxy;
+// Edit + All done for owners, manager and the desk staff, shown on bills in the step lists.
+const billTools = (b) => `${canEditBills() ? editBtn(b.id, b.bill_no, b.items) : ''}${allDoneBtn(b)}`;
 const itemsTag = (b) => b.items ? `<small class="items">${b.items} items</small>` : '';
 const countCell = (r) => r.count_label ? (r.qty != null ? `<b>${r.qty}</b> ${esc(r.count_label)}` : '') : '';
 
