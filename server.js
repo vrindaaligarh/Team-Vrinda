@@ -270,8 +270,8 @@ function startingBill(u, prevQty, code) {
 }
 // Bill: T or R + 6 digits (T050810). Challan: 2 letters + 6 digits (CA007536).
 const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
-// Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Exactly 5 digits means a T bill: 50810 -> T050810.
-const padBillNo = (no) => no.replace(/^(\d{5})$/, 'T0$1').replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
+// Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Exactly 5 digits: below 50000 is an R bill (12345 -> R012345), 50000 and up a T bill (50810 -> T050810).
+const padBillNo = (no) => no.replace(/^(\d{5})$/, (m, d) => (Number(d) < 50000 ? 'R0' : 'T0') + d).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
 const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.

@@ -192,7 +192,7 @@ async function loadTab() {
 }
 
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810.
-const padBillNo = (no) => no.replace(/^(\d{5})$/, 'T0$1').replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
+const padBillNo = (no) => no.replace(/^(\d{5})$/, (m, d) => (Number(d) < 50000 ? 'R0' : 'T0') + d).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
 
 // Tasks like L Rack Setting and O Syrup Cases need a count when they end. Returns the number, or null if cancelled.
 function askQty(label) {
