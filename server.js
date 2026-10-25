@@ -210,6 +210,9 @@ migrate('2026-10-25-last-seen', () => {
 migrate('2026-10-24-work-code-u-supply', () => {
   db.prepare(`INSERT INTO tasks (code, name, kind) VALUES ('U', 'Supply', 'startend') ON CONFLICT(code) DO UPDATE SET name = excluded.name`).run();
 });
+migrate('2026-10-25-basement-setting-racks', () => {
+  db.prepare("UPDATE tasks SET count_label = 'racks' WHERE code = 'D'").run();
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
