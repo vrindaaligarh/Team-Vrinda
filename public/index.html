@@ -313,7 +313,8 @@ async function viewOther(m) {
   m.innerHTML = `<div class="${side ? 'withside' : ''}"><div>${now}
     ${queues.length ? `<section class="card"><h2>Bill work</h2>
       <input id="findbill" class="billsearch" placeholder="${state.me.can_proxy && state.tab !== 'proxy' ? 'Search bill no. or employee name' : 'Search bill no. to end its step, e.g. 50810'}" value="${esc(filters.find || '')}" autocapitalize="characters" autocomplete="off" style="margin-bottom:6px"><div id="findres"></div>
-      <p class="sub">Tap your bill step.</p><div class="task-grid">${billTiles}</div></section>${open ? stageCard(open.task, open.bills, allStages, busy, open.coming, open.done, open.partners) : ''}` : ''}
+      <p class="sub">Tap your bill step.</p><div class="task-grid">${billTiles}</div>
+      ${ownerView ? `<button class="btn green" id="alldoneall" style="margin-top:10px">Make all ${queues.reduce((n, q) => n + q.bills.length, 0)} pending bills Final Ready</button>` : ''}</section>${open ? stageCard(open.task, open.bills, allStages, busy, open.coming, open.done, open.partners) : ''}` : ''}
     <section class="card"><h2>${queues.length ? 'Other work' : 'What are you doing now?'}</h2><p class="sub">${ownerView ? 'Who is on each task right now. To log work for an employee, use <b>Enter for Staff</b>.' : 'Tap a task to start it. Tapping another task ends the current one.'}</p>
     ${busy ? `<p class="pill amber" style="margin-bottom:10px">Finish ${busyAll.length > 1 ? 'your ' + busyAll.length + ' bills' : 'bill ' + esc(busy.bill_no)} first</p>` : ''}<div class="task-grid"${busy ? ' style="opacity:.45;pointer-events:none"' : ownerView ? ' style="pointer-events:none"' : ''}>${tiles}</div></section>
     <section class="card"><h2>My recent tasks</h2>${rows.length ? `<div class="scroll"><table><tr><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Count</th></tr>
@@ -355,6 +356,11 @@ async function viewOther(m) {
     };
     find.oninput = showFind; showFind();
   }
+  const ada = $('#alldoneall');
+  if (ada) ada.onclick = () => {
+    if (prompt('This marks EVERY pending bill as Final Ready right now (all remaining steps filled in).\nType YES to continue.') !== 'YES') return;
+    act(ada, async () => { const r = await api('POST', '/api/bills/alldone-all'); toast(`${r.count} bills are now Final Ready`); });
+  };
   const search = $('#billsearch');
   if (search) {
     const filter = () => {

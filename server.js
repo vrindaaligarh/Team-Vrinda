@@ -356,6 +356,17 @@ const idleNames = () => db.prepare(`SELECT name FROM users WHERE active = 1 AND 
   SELECT start_by FROM entries WHERE end_at IS NULL AND start_at IS NOT NULL AND start_by IS NOT NULL
   UNION SELECT partner_by FROM entries WHERE end_at IS NULL AND start_at IS NOT NULL AND partner_by IS NOT NULL) ORDER BY name`).all().map((x) => x.name);
 
+// All done for one bill: the running step ends under the person doing it; missing steps are saved under u, marked "All done".
+function finishBill(bill, u, t) {
+  for (const st of stages()) {
+    const e = bill.stages[st.code];
+    if (e && e.end_at) continue;
+    if (e) db.prepare("UPDATE entries SET end_at = ?, end_by = ?, entered_by = ?, note = 'All done' WHERE id = ?").run(t, e.start_by || u.id, u.id, e.id);
+    else db.prepare("INSERT INTO entries (bill_id, task_code, start_at, start_by, end_at, end_by, entered_by, note) VALUES (?, ?, ?, ?, ?, ?, ?, 'All done')")
+      .run(bill.id, st.code, st.kind === 'startend' ? t : null, st.kind === 'startend' ? u.id : null, t, u.id, u.id);
+  }
+}
+
 // ---------- API ----------
 const routes = {
   'POST /api/login': async (req, res) => {
@@ -474,15 +485,16 @@ const routes = {
     const [bill] = billRows('WHERE b.id = ?', [bill_id]);
     if (!bill) fail(404, 'Bill not found');
     if (bill.current === 'DONE') fail(400, `Bill ${bill.bill_no} is already final ready`);
-    const t = now();
-    for (const st of stages()) {
-      const e = bill.stages[st.code];
-      if (e && e.end_at) continue;
-      if (e) db.prepare("UPDATE entries SET end_at = ?, end_by = ?, entered_by = ?, note = 'All done' WHERE id = ?").run(t, e.start_by || u.id, u.id, e.id);
-      else db.prepare("INSERT INTO entries (bill_id, task_code, start_at, start_by, end_at, end_by, entered_by, note) VALUES (?, ?, ?, ?, ?, ?, ?, 'All done')")
-        .run(bill.id, st.code, st.kind === 'startend' ? t : null, st.kind === 'startend' ? u.id : null, t, u.id, u.id);
-    }
+    finishBill(bill, u, now());
     send(res, 200, { ok: true, bill_no: bill.bill_no });
+  },
+  // Owners: every pending bill becomes Final Ready at once.
+  'POST /api/bills/alldone-all': async (req, res, u) => {
+    if (!u.is_admin) fail(403, 'Owner only');
+    const t = now(), open = billRows().filter((b) => b.current !== 'DONE');
+    db.exec('BEGIN');
+    try { for (const b of open) finishBill(b, u, t); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; }
+    send(res, 200, { ok: true, count: open.length });
   },
   // Live Board for the manager (ARUN): the owners' view of every bill step and work task, read-only plus End.
   'GET /api/board': async (req, res, u) => {
