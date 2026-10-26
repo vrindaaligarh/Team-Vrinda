@@ -617,15 +617,16 @@ async function viewPrep(m) {
   const totals = {};
   for (const b of bills) { const n = pr(b).start_by_name || '?'; const t = (totals[n] ||= { bills: 0, items: 0 }); t.bills++; t.items += b.items || 0; }
   // Employee summary (like the speed dashboard): in-process items now, start, estimated finish, completed items and speed.
+  const PREP_TARGET = 2;
   const summaryHtml = () => {
     const day = filters.speedDay || new Date().toLocaleDateString('en-CA'), isToday = day === new Date().toLocaleDateString('en-CA');
     const rows = {};
     const get = (n) => (rows[n] ||= { name: n, inItems: 0, inBills: 0, start: null, done: 0, minutes: 0, doneBills: 0, speed: 0 });
     if (isToday) for (const b of bills) { const e = pr(b), r = get(e.start_by_name || '?'); r.inItems += b.items || 0; r.inBills++; if (!r.start || e.start_at < r.start) r.start = e.start_at; }
     for (const p of speed) { const r = get(p.name); r.done = p.items; r.minutes = p.minutes; r.doneBills = p.bills; r.speed = p.per_min; }
-    const teamMin = speed.reduce((n, p) => n + p.minutes, 0), teamSpeed = teamMin ? speed.reduce((n, p) => n + p.items, 0) / teamMin : 0;
     for (const r of Object.values(rows)) {
-      const sp = r.speed || teamSpeed;
+      // EAT: they should be back by preparing at least 2 items a minute.
+      const sp = PREP_TARGET;
       if (r.inItems && sp) { r.eat = new Date(Date.parse(r.start) + (r.inItems / sp) * 60000).toISOString(); r.left = Math.max(0, Math.round((Date.parse(r.eat) - Date.now()) / 60000)); }
     }
     const list = Object.values(rows).sort((a, b) => (b.inItems > 0) - (a.inItems > 0) || (a.start || '').localeCompare(b.start || '') || b.done - a.done);
@@ -636,10 +637,10 @@ async function viewPrep(m) {
       ${list.length ? `<div class="scroll"><table><tr><th>Employee</th><th>In process items</th><th>Active start time</th><th>EAT</th><th>Minutes left</th><th>Completed items</th><th>Total items</th><th>Entries</th><th>Completed speed¹</th></tr>
       ${list.map((r) => `<tr><td><b>${esc(r.name)}</b></td><td>${r.inItems ? `<span class="pill amber">${r.inItems}</span>` : '0'}</td><td>${r.start ? `<b>${fmtTime(r.start)}</b>` : '—'}</td>
         <td>${r.eat ? fmtTime(r.eat) : '—'}</td><td>${r.eat ? `<b class="${r.left === 0 ? 'late' : ''}">${r.left === 0 ? 'Due now' : r.left + ' min'}</b>` : '—'}</td>
-        <td><b>${r.done}</b></td><td>${r.done + r.inItems}</td><td>${r.doneBills + r.inBills}</td><td>${r.speed ? r.speed.toFixed(2) : '—'}</td></tr>`).join('')}
+        <td><b>${r.done}</b></td><td>${r.done + r.inItems}</td><td>${r.doneBills + r.inBills}</td><td>${r.speed ? `<b class="${r.speed < PREP_TARGET ? 'late' : ''}">${r.speed.toFixed(2)}</b>` : '—'}</td></tr>`).join('')}
       </table></div>` : '<p class="empty">No Preparing bills on this day.</p>'}
       <p class="sub" style="margin:10px 0 0">¹ Items per minute on finished bills. Bills prepared together count as one batch (items ÷ minutes from first start to last end). "All done" bills are left out.
-      EAT (estimated arrival time, when the bills should be ready) = active start + in-process items ÷ their speed today (team average ${teamSpeed ? teamSpeed.toFixed(2) : '—'} if they have none yet).</p></section>`;
+      EAT (estimated arrival time) = active start + in-process items ÷ ${PREP_TARGET} items per minute, the minimum speed. Speeds below ${PREP_TARGET} are shown in red.</p></section>`;
   };
   const totalLine = (name) => { const t = totals[name]; return t ? `<b>${esc(name)}</b> is preparing <b>${t.bills} bill${t.bills > 1 ? 's' : ''} · ${t.items} items</b> now` : `<b>${esc(name)}</b> has no bills in Preparing now`; };
   m.innerHTML = `<section class="card"><h2>Preparing Sale Items · new entry</h2>
