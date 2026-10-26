@@ -252,17 +252,17 @@ function stageCard(task, bills, allStages, busy, coming = [], doneList = [], par
     const p = prev && b.stages[prev.code];
     let info, btn;
     if (task.kind === 'single') {
-      info = p ? `${esc(prev.name)} done by ${esc(p.end_by_name)} at ${fmtTime(p.end_at)} · waiting ${ago(p.end_at)}` : '';
+      info = p ? `${esc(prev.name)} done by ${esc(p.end_by_name)} at ${fmtFull(p.end_at)} · waiting ${ago(p.end_at)}` : '';
       btn = `<button class="btn green" data-a="done" data-b="${b.id}" data-t="${task.code}">${task.code === 'FR' ? 'Final Ready' : task.code === 'PK' ? 'Packed now' : 'Done now'}</button>`;
     } else if (e && e.start_at) {
-      info = `<span class="pill amber">In progress</span> Started by ${esc(e.start_by_name)}${e.partner_name ? ' + ' + esc(e.partner_name) : ''} at ${fmtTime(e.start_at)} · ${ago(e.start_at)}`;
+      info = `<span class="pill amber">In progress</span> Started by ${esc(e.start_by_name)}${e.partner_name ? ' + ' + esc(e.partner_name) : ''} at ${fmtFull(e.start_at)} · ${ago(e.start_at)}`;
       // Checking: a second person can join a running check.
       const me = ((state.tab === 'proxy' && state.who) || state.me).id;
       const join = !isFirst && !e.partner_by && e.start_by !== me && !(state.me.is_admin && state.tab !== 'proxy')
         ? `<button class="btn ghost" data-a="join" data-b="${b.id}" data-t="${task.code}">Join</button>` : '';
       btn = `${isFirst ? editBtn(b.id, b.bill_no, b.items) : ''}${join}<button class="btn amber" data-a="end" data-b="${b.id}" data-t="${task.code}">End</button>`;
     } else {
-      info = `<span class="pill gray">To do</span> ${p ? `${esc(prev.name)} by ${esc(p.end_by_name)}, finished ${fmtTime(p.end_at)} · waiting ${ago(p.end_at)}` : ''}`;
+      info = `<span class="pill gray">To do</span> ${p ? `${esc(prev.name)} by ${esc(p.end_by_name)}, finished ${fmtFull(p.end_at)} · waiting ${ago(p.end_at)}` : ''}`;
       btn = busy ? '' : `<button class="btn" data-a="start" data-b="${b.id}" data-t="${task.code}">Start</button>`;
     }
     return `<div class="bill" data-no="${esc(b.bill_no.toUpperCase())}"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div><div class="info">${info}</div>${isFirst ? allDoneBtn(b) : billTools(b)}${btn}</div>`;
