@@ -639,7 +639,7 @@ async function viewPrep(m) {
         <td><b>${r.done}</b></td><td>${r.done + r.inItems}</td><td>${r.doneBills + r.inBills}</td><td>${r.speed ? r.speed.toFixed(2) : '—'}</td></tr>`).join('')}
       </table></div>` : '<p class="empty">No Preparing bills on this day.</p>'}
       <p class="sub" style="margin:10px 0 0">¹ Items per minute on finished bills. Bills prepared together count as one batch (items ÷ minutes from first start to last end). "All done" bills are left out.
-      EAT (estimated finish) = active start + in-process items ÷ their speed today (team average ${teamSpeed ? teamSpeed.toFixed(2) : '—'} if they have none yet).</p></section>`;
+      EAT (estimated arrival time, when the bills should be ready) = active start + in-process items ÷ their speed today (team average ${teamSpeed ? teamSpeed.toFixed(2) : '—'} if they have none yet).</p></section>`;
   };
   const totalLine = (name) => { const t = totals[name]; return t ? `<b>${esc(name)}</b> is preparing <b>${t.bills} bill${t.bills > 1 ? 's' : ''} · ${t.items} items</b> now` : `<b>${esc(name)}</b> has no bills in Preparing now`; };
   m.innerHTML = `<section class="card"><h2>Preparing Sale Items · new entry</h2>
