@@ -190,6 +190,7 @@ function tabs() {
   const t = state.me.is_admin ? [['other', 'Work']] : [['other', 'Work'], ['mine', 'My Jobs']];
   if (state.me.can_proxy) t.splice(1, 0, ['prep', 'Preparing Entry'], ['proxy', 'Enter for Staff']);
   if (state.me.is_manager) t.splice(1, 0, ['board', 'Live Board']);
+  if (state.me.verify_codes.length && !state.me.is_admin && !state.me.is_manager) t.push(['verify', 'Verify Jobs']);
   if (state.me.is_admin || state.me.tasks.includes('FR')) t.push(['final', 'Final Verification']);
   if (state.me.can_proxy && !state.me.is_admin && !state.me.is_manager) t.push(['all', 'All Bills']);
   if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['status', 'Staff Status'], ['fixes', 'Fix Requests']);
@@ -221,7 +222,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, board: viewBoard, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -442,9 +443,7 @@ async function viewAll(m) {
         const status = b.current === 'DONE' ? '<span class="pill green">Ready</span>' : `<span class="pill amber">At ${b.current} ${esc(name(b.current))}</span>`;
         const done = stages.filter((s) => b.stages[s.code]);
         const detail = filters.open === b.id ? `<tr class="detail"><td colspan="${stages.length + 4}">
-          Bill #${esc(b.bill_no)}${b.items ? ` (${b.items} items)` : ''} created ${fmtFull(b.created_at)} by ${esc(b.created_by_name)}. ${editBtn(b.id, b.bill_no, b.items).replace('>Edit<', '>Change bill no. / items<')} ${allDoneBtn(b)}${state.me.is_admin || state.me.is_manager ? `<br>Verify each step that was punched right:
-          <div class="row" style="margin:8px 0 10px">${done.filter((s) => b.stages[s.code].end_at).map((s) => { const e = b.stages[s.code]; return e.verified_at ? `<span class="pill green">${s.code} verified by ${esc(e.verified_by_name)}</span> <a href="#" data-unverify="${e.id}">undo</a>` : `<button class="btn green small" data-verify="${e.id}">Verify ${s.code}</button>`; }).join('') || '<span class="sub">No finished steps yet.</span>'}</div>
-          Or ask the person to fix a wrong punch:
+          Bill #${esc(b.bill_no)}${b.items ? ` (${b.items} items)` : ''} created ${fmtFull(b.created_at)} by ${esc(b.created_by_name)}. ${editBtn(b.id, b.bill_no, b.items).replace('>Edit<', '>Change bill no. / items<')} ${allDoneBtn(b)}${state.me.is_admin || state.me.is_manager ? `<br>Or ask the person to fix a wrong punch:
           <div class="row" style="margin-top:8px">${done.map((s) => { const e = b.stages[s.code]; return `<button class="btn ghost small" data-fix="${e.id}" data-who="${esc(e.start_by_name || e.end_by_name)}">Ask ${esc(e.start_by_name || e.end_by_name)} to fix ${s.code}</button>`; }).join('')}</div>` : ''}
           ${state.me.is_admin ? `<p class="sub" style="margin:10px 0 0">Owner: undo a stage (this also clears the stages after it):</p>
           <div class="row" style="margin-top:6px">${done.map((s) => `<button class="btn ghost small" data-reset="${s.code}" data-b="${b.id}">Undo ${s.code}${s === stages[0] ? ' (delete bill)' : ''}</button>`).join('')}</div>` : ''}</td></tr>` : '';
@@ -497,7 +496,7 @@ async function viewTaskLog(m) {
     <label><input type="checkbox" id="fv" ${filters.verify ? 'checked' : ''}> Only waiting for verification</label></div>
     <div class="card scroll"><table><tr><th>Employee</th><th>Task</th><th>Start</th><th>End</th><th>Time</th><th>Count</th><th>Verify</th><th></th></tr>
     ${rows.map((r) => `<tr><td>${esc(r.start_by_name)}${r.entered_by_name ? `<small>entered by ${esc(r.entered_by_name)}</small>` : ''}</td><td><b>${r.task_code}</b> ${esc(r.task_name)}</td><td>${fmtFull(r.start_at)}</td><td>${r.end_at ? fmtTime(r.end_at) : `<span class="pill amber">Running ${ago(r.start_at)}</span>`}</td><td>${dur(r.start_at, r.end_at)}</td><td>${countCell(r)}</td>
-      <td>${!r.end_at ? '' : r.verified_at ? `<span class="pill green">Verified</span><small>${esc(r.verified_by_name)} ${fmtTime(r.verified_at)} <a href="#" data-unverify="${r.id}">undo</a></small>` : `<button class="btn green small" data-verify="${r.id}">Verify</button>`}</td>
+      <td>${!r.end_at || !r.needs_verify ? '' : r.verified_at ? `<span class="pill green">Verified</span><small>${esc(r.verified_by_name)} ${fmtTime(r.verified_at)} <a href="#" data-unverify="${r.id}">undo</a></small>` : `<button class="btn green small" data-verify="${r.id}">Verify</button>`}</td>
       <td><div class="row" style="flex-wrap:nowrap"><button class="btn ghost small" data-fix="${r.id}" data-who="${esc(r.start_by_name)}">Ask to fix</button>${state.me.is_admin ? `<button class="btn ghost small del" data-del="${r.id}" data-what="${esc(r.start_by_name)} · ${r.task_code} ${esc(r.task_name)} · ${fmtFull(r.start_at)}">Delete</button>` : ''}</div></td></tr>`).join('') || '<tr><td colspan="8" class="empty">Nothing logged.</td></tr>'}
     </table></div>`;
   $('#fv').onchange = (e) => { filters.verify = e.target.checked; loadTab(); };
@@ -539,14 +538,29 @@ const countCell = (r) => r.count_label ? (r.qty != null ? `<b>${r.qty}</b> ${esc
 async function viewMine(m) {
   const { from, to } = dayRange(filters.day);
   const rows = await api('GET', '/api/my-jobs?' + new URLSearchParams(from ? { from, to } : {}));
-  const done = rows.filter((r) => r.end_at), ok = done.filter((r) => r.verified_at);
-  m.innerHTML = `<div class="card row"><input type="date" id="fd" value="${filters.day}"><span class="sub" style="margin:0">${ok.length} of ${done.length} finished jobs verified</span></div>
+  const done = rows.filter((r) => r.end_at && r.needs_verify), ok = done.filter((r) => r.verified_at);
+  m.innerHTML = `<div class="card row"><input type="date" id="fd" value="${filters.day}"><span class="sub" style="margin:0">${ok.length} of ${done.length} jobs needing verification are verified</span></div>
     <section class="card"><h2>My jobs</h2>
     ${rows.map((r) => `<div class="bill"><span class="code">${r.task_code}</span><div class="info" style="color:var(--text)"><b>${esc(r.task_name)}</b>${r.bill_no ? ' · Bill ' + esc(r.bill_no) : ''}${r.qty != null ? ` · ${r.qty} ${esc(r.count_label)}` : ''}
       <div class="sub" style="margin:2px 0 4px">${r.start_at ? fmtTime(r.start_at) + ' – ' : ''}${r.end_at ? fmtTime(r.end_at) : 'running'}${r.start_at && r.end_at ? ' · ' + dur(r.start_at, r.end_at) : ''}</div>
-      ${!r.end_at ? '<span class="pill amber">In progress</span>' : r.verified_at ? `<span class="pill green">✓ Verified by ${esc(r.verified_by_name)}</span> <small class="sub">${fmtTime(r.verified_at)}</small>` : '<span class="pill gray">Waiting for verification</span>'}</div></div>`).join('') || '<p class="empty">No jobs on this day.</p>'}
+      ${!r.end_at ? '<span class="pill amber">In progress</span>' : r.verified_at ? `<span class="pill green">✓ Verified by ${esc(r.verified_by_name)}</span> <small class="sub">${fmtTime(r.verified_at)}</small>` : r.needs_verify ? '<span class="pill gray">Waiting for verification</span>' : '<span class="pill green">Done</span>'}</div></div>`).join('') || '<p class="empty">No jobs on this day.</p>'}
     </section>`;
   $('#fd').onchange = (e) => { filters.day = e.target.value; loadTab(); };
+}
+
+// ---------- Verify Jobs (e.g. VICKY for H Local Poly Distribution): last 7 days ----------
+async function viewVerify(m) {
+  const rows = await api('GET', '/api/verify-list');
+  const waiting = rows.filter((r) => !r.verified_at).length;
+  m.innerHTML = `<section class="card"><h2>Verify jobs · ${waiting} waiting</h2><p class="sub">${esc(state.me.verify_codes.map((c) => c + ' ' + (state.tasks.find((t) => t.code === c) || {}).name).join(', '))} from the last 7 days.</p>
+    ${rows.map((r) => `<div class="bill"><span class="code">${r.task_code}</span><div class="info" style="color:var(--text)"><b>${esc(r.start_by_name || '')}</b> · ${esc(r.task_name)}${r.qty != null ? ` · ${r.qty} ${esc(r.count_label)}` : ''}
+      <div class="sub" style="margin:2px 0 0">${fmtFull(r.start_at)} – ${fmtTime(r.end_at)} · ${dur(r.start_at, r.end_at)}</div>
+      ${r.verified_at ? `<span class="pill green">✓ Verified by ${esc(r.verified_by_name)}</span> <a href="#" data-unverify="${r.id}">undo</a>` : ''}</div>
+      ${r.verified_at ? '' : `<button class="btn green" data-verify="${r.id}">Verify</button>`}</div>`).join('') || '<p class="empty">Nothing to verify.</p>'}</section>`;
+  m.onclick = (e) => {
+    const v = e.target.closest('button[data-verify]'); if (v) return act(v, () => api('POST', '/api/verify', { id: +v.dataset.verify }), 'Verified');
+    const uv = e.target.closest('a[data-unverify]'); if (uv) { e.preventDefault(); return act(null, () => api('POST', '/api/verify', { id: +uv.dataset.unverify, undo: true }), 'Verification removed'); }
+  };
 }
 
 // ---------- Live Board (manager): every bill step and work task, who is on it, who is free ----------

@@ -248,6 +248,13 @@ migrate('2026-10-25-all-done', () => {
   db.exec('ALTER TABLE users ADD COLUMN can_alldone INTEGER NOT NULL DEFAULT 0');
   db.prepare("UPDATE users SET can_alldone = 1 WHERE is_admin = 1 OR username IN ('vicky', 'afzal', 'mansi', 'neha')").run();
 });
+// Only some jobs need verifying (D, H, L, O, Q); VICKY may verify H Local Poly Distribution (users.verify_codes).
+migrate('2026-10-26-verify-only-some-jobs', () => {
+  db.exec('ALTER TABLE tasks ADD COLUMN needs_verify INTEGER NOT NULL DEFAULT 0');
+  db.exec("ALTER TABLE users ADD COLUMN verify_codes TEXT NOT NULL DEFAULT ''");
+  db.prepare("UPDATE tasks SET needs_verify = 1 WHERE code IN ('D', 'H', 'L', 'O', 'Q')").run();
+  db.prepare("UPDATE users SET verify_codes = 'H' WHERE username = 'vicky'").run();
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
@@ -317,7 +324,7 @@ const MANUAL_END = ['M'];
 const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Exactly 5 digits: below 50000 is an R bill (12345 -> R012345), 50000 and up a T bill (50810 -> T050810).
 const padBillNo = (no) => no.replace(/^(\d{5})$/, (m, d) => (Number(d) < 50000 ? 'R0' : 'T0') + d).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
-const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_alldone: !!u.can_alldone, active: !!u.active });
+const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_alldone: !!u.can_alldone, verify_codes: (u.verify_codes || '').split(',').filter(Boolean), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
 function billRows(where = '', params = []) {
@@ -596,7 +603,7 @@ const routes = {
   // The person's own jobs (bill steps and work tasks) for a day, with verification status.
   'GET /api/my-jobs': async (req, res, u, q) => {
     const from = q.get('from') || '0000', to = q.get('to') || '9999';
-    send(res, 200, db.prepare(`SELECT e.id, e.task_code, e.start_at, e.end_at, e.qty, e.verified_at, t.name AS task_name, t.count_label,
+    send(res, 200, db.prepare(`SELECT e.id, e.task_code, e.start_at, e.end_at, e.qty, e.verified_at, t.name AS task_name, t.count_label, t.needs_verify,
         b.bill_no, vu.name AS verified_by_name FROM entries e JOIN tasks t ON t.code = e.task_code
       LEFT JOIN bills b ON b.id = e.bill_id LEFT JOIN users vu ON vu.id = e.verified_by
       WHERE ((e.start_by = ?1 OR e.partner_by = ?1) AND e.start_at >= ?2 AND e.start_at < ?3) OR (e.start_by IS NULL AND e.end_by = ?1 AND e.end_at >= ?2 AND e.end_at < ?3)
@@ -604,11 +611,24 @@ const routes = {
   },
   // Manager/owner confirms a finished job (work task or bill step) was punched correctly. undo: true clears it.
   'POST /api/verify': async (req, res, u) => {
-    if (!canReview(u)) fail(403, 'Managers only');
     const { id, undo } = await readBody(req);
+    const job = db.prepare('SELECT e.task_code, t.needs_verify FROM entries e JOIN tasks t ON t.code = e.task_code WHERE e.id = ?').get(id);
+    if (!job) fail(404, 'Job not found');
+    if (!canReview(u) && !(u.verify_codes || '').split(',').includes(job.task_code)) fail(403, 'Not allowed to verify this job');
+    if (!job.needs_verify && !undo) fail(400, 'This job does not need verification');
     const r = db.prepare('UPDATE entries SET verified_by = ?, verified_at = ? WHERE id = ? AND end_at IS NOT NULL').run(undo ? null : u.id, undo ? null : now(), id);
     if (!r.changes) fail(400, 'Nothing to verify');
     send(res, 200, { ok: true });
+  },
+
+  // Jobs this person may verify (e.g. VICKY: H), last 7 days, waiting ones first.
+  'GET /api/verify-list': async (req, res, u) => {
+    const codes = (u.verify_codes || '').split(',').filter(Boolean);
+    if (!codes.length) fail(403, 'Not allowed');
+    send(res, 200, db.prepare(`SELECT e.id, e.task_code, e.start_at, e.end_at, e.qty, e.verified_at, t.name AS task_name, t.count_label, su.name AS start_by_name, vu.name AS verified_by_name
+      FROM entries e JOIN tasks t ON t.code = e.task_code LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users vu ON vu.id = e.verified_by
+      WHERE e.task_code IN (${codes.map(() => '?').join(',')}) AND e.end_at IS NOT NULL AND e.end_at >= ? ORDER BY e.verified_at IS NOT NULL, e.end_at DESC LIMIT 200`)
+      .all(...codes, new Date(Date.now() - 7 * 86400e3).toISOString()));
   },
 
   // ---------- fix requests (manager asks a person to correct a punch) ----------
@@ -653,8 +673,8 @@ const routes = {
     const where = ['e.bill_id IS NULL']; const params = [];
     if (q.get('from')) { where.push('e.start_at >= ?'); params.push(q.get('from')); }
     if (q.get('to')) { where.push('e.start_at < ?'); params.push(q.get('to')); }
-    if (q.get('verify')) where.push('e.end_at IS NOT NULL AND e.verified_at IS NULL');
-    send(res, 200, db.prepare(`SELECT e.*, t.name AS task_name, t.count_label, su.name AS start_by_name, vu.name AS verified_by_name, pu.name AS entered_by_name FROM entries e
+    if (q.get('verify')) where.push('e.end_at IS NOT NULL AND e.verified_at IS NULL AND t.needs_verify = 1');
+    send(res, 200, db.prepare(`SELECT e.*, t.name AS task_name, t.count_label, t.needs_verify, su.name AS start_by_name, vu.name AS verified_by_name, pu.name AS entered_by_name FROM entries e
       JOIN tasks t ON t.code = e.task_code LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users vu ON vu.id = e.verified_by LEFT JOIN users pu ON pu.id = e.entered_by
       WHERE ${where.join(' AND ')} ORDER BY e.id DESC LIMIT 500`).all(...params));
   },
