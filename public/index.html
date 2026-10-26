@@ -232,13 +232,13 @@ async function loadTab() {
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810.
 const padBillNo = (no) => no.replace(/^(\d{5})$/, (m, d) => (Number(d) < 50000 ? 'R0' : 'T0') + d).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
 
-// Tasks like L Rack Setting and O Syrup Cases need a count when they end. Returns the number, or null if cancelled.
+// Tasks like L Rack Setting and O Syrup Cases can record a count when ended. Optional: blank or Cancel ends without one.
 function askQty(label) {
   for (;;) {
-    const v = prompt(`How many ${label}?`, '');
-    if (v === null) return null;
+    const v = prompt(`How many ${label}? (optional, leave empty to skip)`, '');
+    if (v === null || !v.trim()) return undefined;
     if (/^\d+$/.test(v.trim())) return Number(v.trim());
-    alert('Please type a number, like 12');
+    alert('Please type a number, like 12, or leave it empty');
   }
 }
 
@@ -300,7 +300,8 @@ async function viewOther(m) {
   const stageCodes = queues.map((q) => q.task.code);
   // Owners see the work tiles only as a live board; they log work for staff from Enter for Staff.
   const ownerView = state.me.is_admin && state.tab !== 'proxy';
-  const prevQty = () => { if (!running || !running.count_label) return {}; const n = askQty(running.count_label); return n === null ? null : { prev_qty: n }; };
+  // Starting something else just ends the running task (its count is optional, so no question).
+  const prevQty = () => ({});
   // On I Polythene Packing: open the packing list straight away.
   if (running && running.task_code === 'I' && queues.some((q) => q.task.code === 'PK') && state.autoPK !== running.id) { state.openStage = 'PK'; state.autoPK = running.id; }
   if (state.openStage && !queues.some((q) => q.task.code === state.openStage)) state.openStage = null;
@@ -376,7 +377,7 @@ async function viewOther(m) {
     // End an employee's running work task found by name (saved under them, entered by me).
     const ew = e.target.closest('button[data-endwork]');
     if (ew) {
-      const qty = ew.dataset.label ? askQty(ew.dataset.label) : undefined; if (qty === null) return;
+      const qty = ew.dataset.label ? askQty(ew.dataset.label) : undefined;
       return act(ew, async () => {
         const r = await fetch('/api/work', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-For-User': ew.dataset.user }, body: JSON.stringify({ action: 'end', id: +ew.dataset.endwork, qty }) });
         if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Error');
@@ -395,7 +396,6 @@ async function viewOther(m) {
     const d = e.target.closest('button[data-id]');
     if (d) {
       const qty = running && running.count_label ? askQty(running.count_label) : undefined;
-      if (qty === null) return;
       return act(d, () => api('POST', '/api/work', { action: 'end', id: +d.dataset.id, qty }), 'Ended');
     }
   };
@@ -673,15 +673,7 @@ async function viewPrep(m) {
     if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Type the 5 digits (50810), a full bill no. like T050810, or a challan no. like CA007536', true);
     if (!Number.isInteger(items) || items < 1) return toast('Type the number of items', true);
     const who = staff.find((x) => x.id === +f.who.value);
-    // If the employee is still on a counted task (e.g. L Rack Setting), it ends now and needs its count first.
-    act(f.querySelector('button'), async () => {
-      try { await apiFor(who.id, 'POST', '/api/bills', { bill_no: no, items }); }
-      catch (err) {
-        const m2 = /^Enter how many (.+)$/.exec(err.message); if (!m2) throw err;
-        const n = askQty(`${m2[1]} did ${who.name} finish on their running task`); if (n === null) throw new Error('Not started');
-        await apiFor(who.id, 'POST', '/api/bills', { bill_no: no, items, prev_qty: n });
-      }
-    }, `${no} started for ${who.name}`);
+    act(f.querySelector('button'), () => apiFor(who.id, 'POST', '/api/bills', { bill_no: no, items }), `${no} started for ${who.name}`);
   };
   const filter = () => {
     const q = $('#prepsearch').value.trim().toUpperCase(); filters.prep = q;

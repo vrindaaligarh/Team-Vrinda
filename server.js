@@ -302,11 +302,8 @@ function endOpenWork(u, qty, id) {
   const e = db.prepare(`SELECT e.id, t.count_label FROM entries e JOIN tasks t ON t.code = e.task_code
     WHERE e.bill_id IS NULL AND e.start_by = ? AND e.end_at IS NULL ${id ? 'AND e.id = ?' : ''}`).get(...(id ? [u.id, id] : [u.id]));
   if (!e) return false;
-  let n = null;
-  if (e.count_label) {
-    n = Number(qty);
-    if (qty === undefined || qty === null || qty === '' || !Number.isInteger(n) || n < 0) fail(400, `Enter how many ${e.count_label}`);
-  }
+  // The count (racks, syrup cases) is optional: saved when given, left empty otherwise.
+  const n = e.count_label && qty !== undefined && qty !== null && qty !== '' && Number.isInteger(Number(qty)) && Number(qty) >= 0 ? Number(qty) : null;
   db.prepare('UPDATE entries SET end_at = ?, end_by = ?, qty = ?, entered_by = COALESCE(?, entered_by) WHERE id = ?').run(now(), u.id, n, u.entered_by ?? null, e.id);
   return true;
 }
@@ -568,9 +565,7 @@ const routes = {
         if (!partner || partner.id === u.id || !userTasks(partner).includes(task.code)) fail(400, 'Choose who you are checking with');
         const pb = busyBills(partner)[0];
         if (pb) fail(400, `${partner.name} is busy with bill ${pb.bill_no}`);
-        const pw = db.prepare(`SELECT t.code, t.name, t.count_label FROM entries e JOIN tasks t ON t.code = e.task_code WHERE e.bill_id IS NULL AND e.start_by = ? AND e.end_at IS NULL`).get(partner.id);
-        if (pw && pw.count_label) fail(400, `${partner.name} must first end ${pw.code} ${pw.name} (needs the number of ${pw.count_label})`);
-      }
+              }
       startingBill(u, prev_qty, task.code);
       if (partner && !MANUAL_END.includes(runningWork(partner))) endOpenWork(partner);
       db.prepare('INSERT INTO entries (bill_id, task_code, start_at, start_by, entered_by, partner_by) VALUES (?, ?, ?, ?, ?, ?)').run(bill.id, task.code, t, u.id, u.entered_by ?? null, partner ? partner.id : null);
