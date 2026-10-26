@@ -673,7 +673,15 @@ async function viewPrep(m) {
     if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Type the 5 digits (50810), a full bill no. like T050810, or a challan no. like CA007536', true);
     if (!Number.isInteger(items) || items < 1) return toast('Type the number of items', true);
     const who = staff.find((x) => x.id === +f.who.value);
-    act(f.querySelector('button'), () => apiFor(who.id, 'POST', '/api/bills', { bill_no: no, items }), `${no} started for ${who.name}`);
+    // If the employee is still on a counted task (e.g. L Rack Setting), it ends now and needs its count first.
+    act(f.querySelector('button'), async () => {
+      try { await apiFor(who.id, 'POST', '/api/bills', { bill_no: no, items }); }
+      catch (err) {
+        const m2 = /^Enter how many (.+)$/.exec(err.message); if (!m2) throw err;
+        const n = askQty(`${m2[1]} did ${who.name} finish on their running task`); if (n === null) throw new Error('Not started');
+        await apiFor(who.id, 'POST', '/api/bills', { bill_no: no, items, prev_qty: n });
+      }
+    }, `${no} started for ${who.name}`);
   };
   const filter = () => {
     const q = $('#prepsearch').value.trim().toUpperCase(); filters.prep = q;
