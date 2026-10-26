@@ -66,6 +66,7 @@
   .no small.items { display: block; font-size: 12px; font-weight: 600; color: var(--muted, #667); }
   .task-tile small.who { display: block; font-size: 11px; font-weight: 500; color: var(--muted); line-height: 1.3; margin-top: 2px; }
   .bill-tile.on small.who { color: inherit; opacity: .85; }
+  .late { color: var(--red); }
   .withside { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 12px; align-items: start; }
   .idlelist { position: sticky; top: 8px; max-height: calc(100vh - 16px); overflow-y: auto; }
   .idle-name { padding: 6px 0; border-bottom: 1px solid var(--line); font-weight: 600; }
@@ -615,6 +616,31 @@ async function viewPrep(m) {
   // Bills and items each employee has in Preparing right now.
   const totals = {};
   for (const b of bills) { const n = pr(b).start_by_name || '?'; const t = (totals[n] ||= { bills: 0, items: 0 }); t.bills++; t.items += b.items || 0; }
+  // Employee summary (like the speed dashboard): in-process items now, start, estimated finish, completed items and speed.
+  const summaryHtml = () => {
+    const day = filters.speedDay || new Date().toLocaleDateString('en-CA'), isToday = day === new Date().toLocaleDateString('en-CA');
+    const rows = {};
+    const get = (n) => (rows[n] ||= { name: n, inItems: 0, inBills: 0, start: null, done: 0, minutes: 0, doneBills: 0, speed: 0 });
+    if (isToday) for (const b of bills) { const e = pr(b), r = get(e.start_by_name || '?'); r.inItems += b.items || 0; r.inBills++; if (!r.start || e.start_at < r.start) r.start = e.start_at; }
+    for (const p of speed) { const r = get(p.name); r.done = p.items; r.minutes = p.minutes; r.doneBills = p.bills; r.speed = p.per_min; }
+    const teamMin = speed.reduce((n, p) => n + p.minutes, 0), teamSpeed = teamMin ? speed.reduce((n, p) => n + p.items, 0) / teamMin : 0;
+    for (const r of Object.values(rows)) {
+      const sp = r.speed || teamSpeed;
+      if (r.inItems && sp) { r.eat = new Date(Date.parse(r.start) + (r.inItems / sp) * 60000).toISOString(); r.left = Math.max(0, Math.round((Date.parse(r.eat) - Date.now()) / 60000)); }
+    }
+    const list = Object.values(rows).sort((a, b) => (b.inItems > 0) - (a.inItems > 0) || (a.start || '').localeCompare(b.start || '') || b.done - a.done);
+    const sum = (k) => list.reduce((n, r) => n + r[k], 0);
+    const stat = (n, label) => `<div class="stat"><b>${n}</b><span>${label}</span></div>`;
+    return `<section class="card"><div class="row"><h2 class="grow" style="margin:0">Employee summary</h2><input type="date" id="spd" value="${day}"></div>
+      <div class="stats" style="margin:12px 0">${stat(sum('done') + sum('inItems'), 'Total items')}${stat(sum('done'), 'Done items')}${stat(sum('inItems'), 'In process items')}${stat(sum('doneBills') + sum('inBills'), 'Entries (bills)')}</div>
+      ${list.length ? `<div class="scroll"><table><tr><th>Employee</th><th>In process items</th><th>Active start time</th><th>EAT</th><th>Minutes left</th><th>Completed items</th><th>Total items</th><th>Entries</th><th>Completed speed¹</th></tr>
+      ${list.map((r) => `<tr><td><b>${esc(r.name)}</b></td><td>${r.inItems ? `<span class="pill amber">${r.inItems}</span>` : '0'}</td><td>${r.start ? `<b>${fmtTime(r.start)}</b>` : '—'}</td>
+        <td>${r.eat ? fmtTime(r.eat) : '—'}</td><td>${r.eat ? `<b class="${r.left === 0 ? 'late' : ''}">${r.left === 0 ? 'Due now' : r.left + ' min'}</b>` : '—'}</td>
+        <td><b>${r.done}</b></td><td>${r.done + r.inItems}</td><td>${r.doneBills + r.inBills}</td><td>${r.speed ? r.speed.toFixed(2) : '—'}</td></tr>`).join('')}
+      </table></div>` : '<p class="empty">No Preparing bills on this day.</p>'}
+      <p class="sub" style="margin:10px 0 0">¹ Items per minute on finished bills. Bills prepared together count as one batch (items ÷ minutes from first start to last end). "All done" bills are left out.
+      EAT (estimated finish) = active start + in-process items ÷ their speed today (team average ${teamSpeed ? teamSpeed.toFixed(2) : '—'} if they have none yet).</p></section>`;
+  };
   const totalLine = (name) => { const t = totals[name]; return t ? `<b>${esc(name)}</b> is preparing <b>${t.bills} bill${t.bills > 1 ? 's' : ''} · ${t.items} items</b> now` : `<b>${esc(name)}</b> has no bills in Preparing now`; };
   m.innerHTML = `<section class="card"><h2>Preparing Sale Items · new entry</h2>
     <form id="prepform" class="row" style="flex-wrap:wrap">
@@ -631,12 +657,7 @@ async function viewPrep(m) {
       <div class="info"><b style="color:var(--text)">${esc(e.start_by_name || '')}</b> · started ${fmtTime(e.start_at)} · ${ago(e.start_at)}${e.entered_by_name ? ` <small>(entered by ${esc(e.entered_by_name)})</small>` : ''}</div>
       ${editBtn(b.id, b.bill_no, b.items)}${allDoneBtn(b)}<button class="btn amber" data-end="${b.id}">End</button></div>`; }).join('') || '<p class="empty">No bills being prepared.</p>'}
     </section>
-    <section class="card"><div class="row"><h2 class="grow" style="margin:0">Preparing speed</h2><input type="date" id="spd" value="${filters.speedDay || new Date().toLocaleDateString('en-CA')}"></div>
-    <p class="sub">Items per minute for finished bills. Bills prepared together (overlapping times) count as one batch: total items ÷ minutes from first start to last end. "All done" bills are left out.</p>
-    ${speed.length ? `<div class="scroll"><table><tr><th>Employee</th><th>Bills</th><th>Items</th><th>Minutes</th><th>Items / min</th><th>Batches (latest first)</th></tr>
-    ${speed.map((p) => `<tr><td><b>${esc(p.name)}</b></td><td>${p.bills}</td><td>${p.items}</td><td>${p.minutes}</td><td><b>${p.per_min}</b></td>
-      <td>${p.batches.map((b) => `<small style="display:block">${fmtTime(b.start_at)}–${fmtTime(b.end_at)} · ${b.bills.length} bill${b.bills.length > 1 ? 's' : ''} · ${b.items} items · ${b.minutes}m · <b>${b.per_min}/min</b></small>`).join('')}</td></tr>`).join('')}
-    </table></div>` : '<p class="empty">No finished Preparing bills on this day.</p>'}</section>`;
+    ${summaryHtml()}`;
   $('#spd').onchange = (e) => { filters.speedDay = e.target.value; loadTab(); };
   const f = $('#prepform');
   f.no.oninput = () => { f.no.value = f.no.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); };
