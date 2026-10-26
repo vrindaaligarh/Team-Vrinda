@@ -611,14 +611,20 @@ async function apiFor(userId, method, url, body) {
 async function viewPrep(m) {
   const { staff, bills } = await api('GET', '/api/preparing');
   const pr = (b) => b.stages.PR || {};
+  // Bills and items each employee has in Preparing right now.
+  const totals = {};
+  for (const b of bills) { const n = pr(b).start_by_name || '?'; const t = (totals[n] ||= { bills: 0, items: 0 }); t.bills++; t.items += b.items || 0; }
+  const totalLine = (name) => { const t = totals[name]; return t ? `<b>${esc(name)}</b> is preparing <b>${t.bills} bill${t.bills > 1 ? 's' : ''} · ${t.items} items</b> now` : `<b>${esc(name)}</b> has no bills in Preparing now`; };
   m.innerHTML = `<section class="card"><h2>Preparing Sale Items · new entry</h2>
     <form id="prepform" class="row" style="flex-wrap:wrap">
       <select name="who" required style="flex:1 1 140px"><option value="">Employee…</option>${staff.map((x) => `<option value="${x.id}" ${x.id === state.prepWho ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
       <input name="no" class="billno" placeholder="Bill no. e.g. 50810" maxlength="8" autocapitalize="characters" autocomplete="off" required style="flex:1 1 120px">
       <input name="items" class="items-in" type="number" inputmode="numeric" min="1" max="9999" placeholder="Items" required>
       <button class="btn">Submit</button></form>
-    <p class="sub" style="margin:6px 0 0">Starts Preparing for that employee at the current time. Press End below when they finish.</p></section>
-    <section class="card"><h2>Being prepared now · ${bills.length}</h2>
+    <p class="sub" style="margin:6px 0 0">Starts Preparing for that employee at the current time. Press End below when they finish.</p>
+    <p id="preptotal" class="pill amber" style="margin-top:8px;font-size:14px;${state.prepWho ? '' : 'display:none'}">${state.prepWho ? totalLine((staff.find((x) => x.id === state.prepWho) || {}).name) : ''}</p></section>
+    <section class="card"><h2>Being prepared now · ${bills.length} bills · ${bills.reduce((n, b) => n + (b.items || 0), 0)} items</h2>
+    <div class="chips" style="margin-bottom:10px">${Object.entries(totals).sort((a, b) => b[1].items - a[1].items).map(([n, t]) => `<span class="chip off" style="border-style:solid;cursor:pointer" data-who="${esc(n)}">${esc(n)}<small>${t.bills} bill${t.bills > 1 ? 's' : ''} · ${t.items} items</small></span>`).join('')}</div>
     <input id="prepsearch" class="billsearch" placeholder="Search employee name or bill no." value="${esc(filters.prep || '')}" autocapitalize="characters" autocomplete="off">
     ${bills.map((b) => { const e = pr(b); return `<div class="bill" data-no="${esc(b.bill_no + ' ' + (e.start_by_name || ''))}"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div>
       <div class="info"><b style="color:var(--text)">${esc(e.start_by_name || '')}</b> · started ${fmtTime(e.start_at)} · ${ago(e.start_at)}${e.entered_by_name ? ` <small>(entered by ${esc(e.entered_by_name)})</small>` : ''}</div>
@@ -626,7 +632,11 @@ async function viewPrep(m) {
     </section>`;
   const f = $('#prepform');
   f.no.oninput = () => { f.no.value = f.no.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); };
-  f.who.onchange = () => { state.prepWho = +f.who.value || null; };
+  f.who.onchange = () => {
+    state.prepWho = +f.who.value || null;
+    const el = $('#preptotal'), who = staff.find((x) => x.id === state.prepWho);
+    el.style.display = who ? '' : 'none'; el.innerHTML = who ? totalLine(who.name) : '';
+  };
   f.onsubmit = (e) => {
     e.preventDefault();
     const no = padBillNo(f.no.value.trim().toUpperCase()), items = Number(f.items.value);
@@ -642,6 +652,7 @@ async function viewPrep(m) {
   $('#prepsearch').oninput = filter; filter();
   m.onclick = (e) => {
     const ed = e.target.closest('button[data-edit]'); if (ed) return editBill(ed);
+    const wc = e.target.closest('[data-who]'); if (wc) { $('#prepsearch').value = wc.dataset.who; return filter(); }
     const en = e.target.closest('button[data-end]');
     if (en) act(en, () => api('POST', '/api/stage', { bill_id: +en.dataset.end, task_code: 'PR', action: 'end' }), 'Ended at ' + fmtTime(new Date().toISOString()));
   };
