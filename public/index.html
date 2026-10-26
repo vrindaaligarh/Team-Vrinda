@@ -609,7 +609,8 @@ async function apiFor(userId, method, url, body) {
   return data;
 }
 async function viewPrep(m) {
-  const { staff, bills } = await api('GET', '/api/preparing');
+  const { from: sf, to: st } = dayRange(filters.speedDay || new Date().toLocaleDateString('en-CA'));
+  const [{ staff, bills }, speed] = await Promise.all([api('GET', '/api/preparing'), api('GET', '/api/prep-speed?' + new URLSearchParams({ from: sf, to: st }))]);
   const pr = (b) => b.stages.PR || {};
   // Bills and items each employee has in Preparing right now.
   const totals = {};
@@ -629,7 +630,14 @@ async function viewPrep(m) {
     ${bills.map((b) => { const e = pr(b); return `<div class="bill" data-no="${esc(b.bill_no + ' ' + (e.start_by_name || ''))}"><div class="no">#${esc(b.bill_no)}${itemsTag(b)}</div>
       <div class="info"><b style="color:var(--text)">${esc(e.start_by_name || '')}</b> · started ${fmtTime(e.start_at)} · ${ago(e.start_at)}${e.entered_by_name ? ` <small>(entered by ${esc(e.entered_by_name)})</small>` : ''}</div>
       ${editBtn(b.id, b.bill_no, b.items)}${allDoneBtn(b)}<button class="btn amber" data-end="${b.id}">End</button></div>`; }).join('') || '<p class="empty">No bills being prepared.</p>'}
-    </section>`;
+    </section>
+    <section class="card"><div class="row"><h2 class="grow" style="margin:0">Preparing speed</h2><input type="date" id="spd" value="${filters.speedDay || new Date().toLocaleDateString('en-CA')}"></div>
+    <p class="sub">Items per minute for finished bills. Bills prepared together (overlapping times) count as one batch: total items ÷ minutes from first start to last end. "All done" bills are left out.</p>
+    ${speed.length ? `<div class="scroll"><table><tr><th>Employee</th><th>Bills</th><th>Items</th><th>Minutes</th><th>Items / min</th><th>Batches (latest first)</th></tr>
+    ${speed.map((p) => `<tr><td><b>${esc(p.name)}</b></td><td>${p.bills}</td><td>${p.items}</td><td>${p.minutes}</td><td><b>${p.per_min}</b></td>
+      <td>${p.batches.map((b) => `<small style="display:block">${fmtTime(b.start_at)}–${fmtTime(b.end_at)} · ${b.bills.length} bill${b.bills.length > 1 ? 's' : ''} · ${b.items} items · ${b.minutes}m · <b>${b.per_min}/min</b></small>`).join('')}</td></tr>`).join('')}
+    </table></div>` : '<p class="empty">No finished Preparing bills on this day.</p>'}</section>`;
+  $('#spd').onchange = (e) => { filters.speedDay = e.target.value; loadTab(); };
   const f = $('#prepform');
   f.no.oninput = () => { f.no.value = f.no.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); };
   f.who.onchange = () => {

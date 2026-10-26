@@ -509,6 +509,28 @@ const routes = {
     const open = billRows().filter((b) => b.current !== 'DONE');
     send(res, 200, { stages: stages().map((t) => ({ task: t, bills: open.filter((b) => b.current === t.code).reverse() })), onTask: liveOnTask(), idle: idleNames() });
   },
+  // Preparing speed: finished Preparing bills per employee, grouped into batches (bills whose times overlap),
+  // items per minute = items / minutes from the first start to the last end of the batch.
+  'GET /api/prep-speed': async (req, res, u, q) => {
+    if (!u.can_proxy && !u.is_admin && !u.is_manager) fail(403, 'Not allowed');
+    const from = q.get('from') || new Date(Date.now() - 86400e3).toISOString(), to = q.get('to') || '9999';
+    const rows = db.prepare(`SELECT e.start_by, us.name, e.start_at, e.end_at, b.bill_no, b.items FROM entries e JOIN bills b ON b.id = e.bill_id JOIN users us ON us.id = e.start_by
+      WHERE e.task_code = ? AND e.start_at IS NOT NULL AND e.end_at IS NOT NULL AND (e.note IS NULL OR e.note != 'All done') AND e.start_at >= ? AND e.start_at < ?
+      ORDER BY us.name, e.start_at`).all(stages()[0].code, from, to);
+    const people = {};
+    for (const r of rows) {
+      const p = (people[r.name] ||= { name: r.name, batches: [] });
+      const last = p.batches[p.batches.length - 1];
+      if (last && r.start_at <= last.end_at) { last.bills.push(r.bill_no); last.items += r.items || 0; if (r.end_at > last.end_at) last.end_at = r.end_at; }
+      else p.batches.push({ start_at: r.start_at, end_at: r.end_at, bills: [r.bill_no], items: r.items || 0 });
+    }
+    const out = Object.values(people).map((p) => {
+      for (const b of p.batches) { b.minutes = Math.max(1, Math.round((Date.parse(b.end_at) - Date.parse(b.start_at)) / 60000)); b.per_min = +(b.items / b.minutes).toFixed(2); }
+      const items = p.batches.reduce((n, b) => n + b.items, 0), minutes = p.batches.reduce((n, b) => n + b.minutes, 0);
+      return { name: p.name, bills: p.batches.reduce((n, b) => n + b.bills.length, 0), items, minutes, per_min: +(items / minutes).toFixed(2), batches: p.batches.reverse() };
+    }).sort((a, b) => b.per_min - a.per_min);
+    send(res, 200, out);
+  },
   // Bill search for owners, MANSI and AFZAL: any open bill, at any step.
   'GET /api/find-bills': async (req, res, u, q) => {
     if (!u.can_proxy && !u.can_alldone && !u.is_manager) fail(403, 'Not allowed');
