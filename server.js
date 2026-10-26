@@ -255,6 +255,11 @@ migrate('2026-10-26-verify-only-some-jobs', () => {
   db.prepare("UPDATE tasks SET needs_verify = 1 WHERE code IN ('D', 'H', 'L', 'O', 'Q')").run();
   db.prepare("UPDATE users SET verify_codes = 'H' WHERE username = 'vicky'").run();
 });
+// YASH also checks sale items (CH), besides Final Ready.
+migrate('2026-10-26-yash-checking', () => {
+  const y = db.prepare("SELECT id, tasks FROM users WHERE username = 'yash'").get();
+  if (y && !y.tasks.split(',').includes('CH')) db.prepare('UPDATE users SET tasks = ? WHERE id = ?').run([...y.tasks.split(',').filter(Boolean), 'CH'].join(','), y.id);
+});
 
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
