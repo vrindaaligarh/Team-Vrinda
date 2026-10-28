@@ -269,6 +269,15 @@ migrate('2026-10-28-everyone-checking', () => {
   }
 });
 
+// Owner, 2026-10-28: SUMAN, SIYA and new login PRIYANSHI SHARMA get the same rights as RIYA.
+migrate('2026-10-28-like-riya', () => {
+  if (!db.prepare("SELECT 1 FROM users WHERE username LIKE 'priyanshi%' OR upper(name) LIKE 'PRIYANSHI%'").get())
+    db.prepare("INSERT INTO users (username, name, pass_hash, is_admin, tasks) VALUES ('priyanshi', 'PRIYANSHI SHARMA', ?, 0, '')").run(hashPassword('1234'));
+  db.prepare(`UPDATE users SET (tasks, can_proxy, can_alldone, is_manager, blocked, verify_codes) =
+    (SELECT tasks, can_proxy, can_alldone, is_manager, blocked, verify_codes FROM users WHERE username = 'riya'), active = 1
+    WHERE username IN ('suman', 'siya') OR username LIKE 'priyanshi%' OR upper(name) LIKE 'PRIYANSHI%'`).run();
+});
+
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
 const stages = () => db.prepare('SELECT * FROM tasks WHERE stage_order IS NOT NULL ORDER BY stage_order').all();
