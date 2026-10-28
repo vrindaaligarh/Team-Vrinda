@@ -278,6 +278,14 @@ migrate('2026-10-28-like-riya', () => {
     WHERE username IN ('suman', 'siya') OR username LIKE 'priyanshi%' OR upper(name) LIKE 'PRIYANSHI%'`).run();
 });
 
+// Owner, 2026-10-28: OWAIS has left. Login switched off and removed from every list; his past work stays in the records.
+migrate('2026-10-28-owais-left', () => {
+  const o = db.prepare("SELECT id FROM users WHERE username = 'owais'").get();
+  if (!o) return;
+  db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(o.id);
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(o.id);
+});
+
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
 const stages = () => db.prepare('SELECT * FROM tasks WHERE stage_order IS NOT NULL ORDER BY stage_order').all();
