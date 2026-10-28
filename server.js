@@ -286,6 +286,9 @@ migrate('2026-10-28-owais-left', () => {
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(o.id);
 });
 
+// Owner, 2026-10-28: checkers give each bill 1-20 points in Checking.
+migrate('2026-10-28-check-points', () => { db.exec('ALTER TABLE entries ADD COLUMN points INTEGER'); });
+
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
 const stages = () => db.prepare('SELECT * FROM tasks WHERE stage_order IS NOT NULL ORDER BY stage_order').all();
@@ -322,7 +325,7 @@ function currentUser(req) {
 }
 // The bill this person has started (preparing or checking) but not finished yet, if any.
 // Bills this person has started but not finished (several are allowed while preparing).
-const busyBills = (u) => db.prepare(`SELECT b.id AS bill_id, b.bill_no, b.items, e.task_code, e.start_at, t.name AS task_name,
+const busyBills = (u) => db.prepare(`SELECT b.id AS bill_id, b.bill_no, b.items, e.task_code, e.start_at, e.points, t.name AS task_name,
   (SELECT name FROM users WHERE id = CASE WHEN e.start_by = ?1 THEN e.partner_by ELSE e.start_by END) AS with_name FROM entries e
   JOIN bills b ON b.id = e.bill_id JOIN tasks t ON t.code = e.task_code
   WHERE (e.start_by = ?1 OR e.partner_by = ?1) AND e.start_at IS NOT NULL AND e.end_at IS NULL ORDER BY e.id`).all(u.id);
@@ -484,6 +487,18 @@ const routes = {
     send(res, 200, { ok: true });
   },
   // Fix a wrongly typed bill no. or item count: the person who started Preparing (until Checking starts), or an owner/manager any time.
+  // Checking points (1-20) for a bill: the checker, their partner, or desk staff / manager / owners.
+  'POST /api/points': async (req, res, u) => {
+    const { bill_id, points } = await readBody(req);
+    const code = stages()[1].code;
+    const e = db.prepare('SELECT id, start_by, partner_by FROM entries WHERE bill_id = ? AND task_code = ?').get(bill_id, code);
+    if (!e) fail(404, 'Checking has not started on this bill');
+    if (!u.is_admin && !u.is_manager && !u.can_proxy && e.start_by !== u.id && e.partner_by !== u.id) fail(403, 'Only the checker can give points');
+    const p = points === '' || points == null ? null : Number(points);
+    if (p !== null && !(Number.isInteger(p) && p >= 1 && p <= 20)) fail(400, 'Points must be 1 to 20');
+    db.prepare('UPDATE entries SET points = ? WHERE id = ?').run(p, e.id);
+    send(res, 200, { ok: true, points: p });
+  },
   'POST /api/bills/edit': async (req, res, u) => {
     const body = await readBody(req);
     const [bill] = billRows('WHERE b.id = ?', [body.bill_id]);
@@ -811,7 +826,7 @@ const server = http.createServer(async (req, res) => {
       }
       // "Enter for staff": work buttons pressed on someone else's behalf.
       const forId = Number(req.headers['x-for-user'] || 0);
-      const proxyPaths = ['/api/me', '/api/queue', '/api/bills', '/api/stage', '/api/work', '/api/bills/edit'];
+      const proxyPaths = ['/api/me', '/api/queue', '/api/bills', '/api/stage', '/api/work', '/api/bills/edit', '/api/points'];
       if (forId && u && proxyPaths.includes(url.pathname)) {
         if (!u.can_proxy) fail(403, 'Not allowed to enter work for others');
         const t = db.prepare('SELECT * FROM users WHERE id = ? AND active = 1').get(forId);
