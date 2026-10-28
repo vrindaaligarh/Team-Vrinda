@@ -69,6 +69,7 @@
   .late { color: var(--red); }
   .withside { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 12px; align-items: start; }
   .idlelist { position: sticky; top: 8px; max-height: calc(100vh - 16px); overflow-y: auto; }
+  .idle-name small.who { display: block; font-weight: 500; font-size: 11px; color: var(--muted); }
   .idle-name { padding: 6px 0; border-bottom: 1px solid var(--line); font-weight: 600; }
   @media (max-width: 800px) {
     .withside { grid-template-columns: 1fr; }
@@ -611,7 +612,7 @@ async function apiFor(userId, method, url, body) {
 }
 async function viewPrep(m) {
   const { from: sf, to: st } = dayRange(filters.speedDay || new Date().toLocaleDateString('en-CA'));
-  const [{ staff, bills }, speed] = await Promise.all([api('GET', '/api/preparing'), api('GET', '/api/prep-speed?' + new URLSearchParams({ from: sf, to: st }))]);
+  const [{ staff, bills, free = [] }, speed] = await Promise.all([api('GET', '/api/preparing'), api('GET', '/api/prep-speed?' + new URLSearchParams({ from: sf, to: st }))]);
   const pr = (b) => b.stages.PR || {};
   // Bills and items each employee has in Preparing right now.
   const totals = {};
@@ -643,7 +644,9 @@ async function viewPrep(m) {
       EAT (estimated arrival time) = active start + in-process items ÷ ${PREP_TARGET} items per minute, the minimum speed. Speeds below ${PREP_TARGET} are shown in red.</p></section>`;
   };
   const totalLine = (name) => { const t = totals[name]; return t ? `<b>${esc(name)}</b> is preparing <b>${t.bills} bill${t.bills > 1 ? 's' : ''} · ${t.items} items</b> now` : `<b>${esc(name)}</b> has no bills in Preparing now`; };
-  m.innerHTML = `<section class="card"><h2>Preparing Sale Items · new entry</h2>
+  const side = `<aside class="card idlelist"><h2>No bills given · ${free.length}</h2><p class="sub">Sale items team with no bill in Preparing. Tap a name to pick them.</p>
+    ${free.map((x) => `<div class="idle-name" data-pick="${esc(x.name)}" style="cursor:pointer">${esc(x.name)}${x.doing ? `<small class="who">${esc(x.doing)}</small>` : ''}</div>`).join('') || '<p class="empty">Everyone has bills.</p>'}</aside>`;
+  m.innerHTML = `<div class="withside"><div><section class="card"><h2>Preparing Sale Items · new entry</h2>
     <form id="prepform" class="row" style="flex-wrap:wrap">
       <select name="who" required style="flex:1 1 140px"><option value="">Employee…</option>${staff.map((x) => `<option value="${x.id}" ${x.id === state.prepWho ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
       <input name="no" class="billno" placeholder="Bill no. e.g. 50810" maxlength="8" autocapitalize="characters" autocomplete="off" required style="flex:1 1 120px">
@@ -658,7 +661,7 @@ async function viewPrep(m) {
       <div class="info"><b style="color:var(--text)">${esc(e.start_by_name || '')}</b> · started ${fmtTime(e.start_at)} · ${ago(e.start_at)}${e.entered_by_name ? ` <small>(entered by ${esc(e.entered_by_name)})</small>` : ''}</div>
       ${editBtn(b.id, b.bill_no, b.items)}${allDoneBtn(b)}<button class="btn amber" data-end="${b.id}">End</button></div>`; }).join('') || '<p class="empty">No bills being prepared.</p>'}
     </section>
-    ${summaryHtml()}`;
+    ${summaryHtml()}</div>${side}</div>`;
   $('#spd').onchange = (e) => { filters.speedDay = e.target.value; loadTab(); };
   const f = $('#prepform');
   f.no.oninput = () => { f.no.value = f.no.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); };
@@ -683,6 +686,8 @@ async function viewPrep(m) {
   m.onclick = (e) => {
     const ed = e.target.closest('button[data-edit]'); if (ed) return editBill(ed);
     const wc = e.target.closest('[data-who]'); if (wc) { $('#prepsearch').value = wc.dataset.who; return filter(); }
+    const pk = e.target.closest('[data-pick]');
+    if (pk) { const who = staff.find((x) => x.name === pk.dataset.pick); if (who) { f.who.value = who.id; f.who.onchange(); f.no.focus(); } return; }
     const en = e.target.closest('button[data-end]');
     if (en) act(en, () => api('POST', '/api/stage', { bill_id: +en.dataset.end, task_code: 'PR', action: 'end' }), 'Ended at ' + fmtTime(new Date().toISOString()));
   };

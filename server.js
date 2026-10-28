@@ -348,6 +348,9 @@ function billRows(where = '', params = []) {
   });
 }
 
+// Employees who prepare sale items (owner's list, 2026-10-28), for the Preparing Entry side list.
+const PREP_TEAM = ['ANAS', 'AZEEM', 'ABHAY', 'FARAZ', 'HAMZA', 'JUNAID', 'REHAN', 'SAFFAN', 'SUFIYAN', 'ZUHAIB', 'NAVED', 'ADNAN', 'RAJ', 'SAIF', 'FARHAN', 'HAYYUL'];
+
 // Who is on each work task and bill step right now (names for the tiles).
 function liveOnTask() {
   const onTask = {};
@@ -484,7 +487,12 @@ const routes = {
     const first = stages()[0];
     const staff = db.prepare('SELECT id, name, tasks FROM users WHERE active = 1 AND is_admin = 0 ORDER BY name').all()
       .filter((x) => userTasks(x).includes(first.code)).map(({ id, name }) => ({ id, name }));
-    send(res, 200, { staff, bills: billRows().filter((b) => b.current === first.code && b.stages[first.code] && b.stages[first.code].start_at) });
+    const bills = billRows().filter((b) => b.current === first.code && b.stages[first.code] && b.stages[first.code].start_at);
+    // Right side: the owner's sale-items team who have no bill in Preparing now, with what they are doing instead.
+    const busy = new Set(bills.map((b) => b.stages[first.code].start_by_name)), doing = {}, names = Object.fromEntries(db.prepare('SELECT code, name FROM tasks').all().map((t) => [t.code, t.name]));
+    for (const [code, list] of Object.entries(liveOnTask())) for (const n of list) (doing[n] ||= []).push(names[code] || code);
+    const free = PREP_TEAM.filter((n) => !busy.has(n)).map((n) => ({ name: n, doing: (doing[n] || []).join(', ') }));
+    send(res, 200, { staff, bills, free });
   },
   // All done: end the running step and record every step still missing, so the bill is Final Ready now.
   // Running steps end under the person doing them; missing steps are saved under whoever pressed, marked "All done".
