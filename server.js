@@ -261,6 +261,14 @@ migrate('2026-10-26-yash-checking', () => {
   if (y && !y.tasks.split(',').includes('CH')) db.prepare('UPDATE users SET tasks = ? WHERE id = ?').run([...y.tasks.split(',').filter(Boolean), 'CH'].join(','), y.id);
 });
 
+// Owner, 2026-10-28: every employee may do Checking (sale goods check).
+migrate('2026-10-28-everyone-checking', () => {
+  for (const u of db.prepare('SELECT id, tasks FROM users WHERE is_admin = 0').all()) {
+    const t = (u.tasks || '').split(',').map((s) => s.trim()).filter(Boolean);
+    if (!t.includes('CH')) db.prepare('UPDATE users SET tasks = ? WHERE id = ?').run([...t, 'CH'].join(','), u.id);
+  }
+});
+
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
 const stages = () => db.prepare('SELECT * FROM tasks WHERE stage_order IS NOT NULL ORDER BY stage_order').all();
