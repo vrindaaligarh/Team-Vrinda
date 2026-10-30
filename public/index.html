@@ -1307,7 +1307,8 @@ const attFmt = (d, o = { weekday: 'long', day: 'numeric', month: 'long', year: '
 const attShiftDay = (d, n) => new Date(Date.parse(d + 'T12:00:00Z') + n * 864e5).toISOString().slice(0, 10);
 const attNow = () => { const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date()).map((x) => [x.type, x.value])); return { date: p.year + '-' + p.month + '-' + p.day, minutes: (Number(p.hour) % 24) * 60 + Number(p.minute) }; };
 const attHasPunch = (s) => String(s || '').split(';').some((t) => attMins(t.trim()) != null);
-let attData = { dates: {}, revisions: {}, approvals: [], uploads: [] }, attBusy = false, attMsg = '';
+let attData = { dates: {}, revisions: {}, approvals: [], uploads: [], lateOk: [] }, attBusy = false, attMsg = '';
+const attLateOk = (date, name) => (attData.lateOk || []).find((a) => a.date === date && a.name === name);
 
 const attApproval = (date, name) => attData.approvals.find((a) => a.date === date && a.name === name && a.dayRevision === attData.revisions[date]);
 const attInformed = (date, name) => (attApproval(date, name) || {}).status === 'approved';
@@ -1334,7 +1335,9 @@ function attClassifyDay(date) {
     const halfExit = attMins(ATT_HALF_EXIT) - (updated && s.girl ? 10 : 0);
     if (!times.length) { people.push({ name, status: 'leave', due, outDue, grace, allowedExit, raw: (rec && rec.raw) || '' }); continue; }
     const first = times[0], last = times.length > 1 ? times[times.length - 1] : null, lateBy = Math.max(0, first - due), reasons = [];
-    if (lateBy > 60) reasons.push('Late by more than 1 hour (' + attSpan(lateBy) + ')');
+    // Approved late: not counted anywhere (no late, no late fine, no "more than 1 hour late" half day).
+    const lateExcused = lateBy > grace && !!attLateOk(date, name);
+    if (lateBy > 60 && !lateExcused) reasons.push('Late by more than 1 hour (' + attSpan(lateBy) + ')');
     let exitNote = '';
     if (date === now.date && now.minutes < halfExit && (last == null || last < halfExit)) exitNote = 'Day not over yet';
     else if (last == null) reasons.push('No exit punch (only one punch at ' + attHm(first) + ')');
@@ -1345,7 +1348,7 @@ function attClassifyDay(date) {
     const breakValid = !breakExcluded && !rec.duplicate && bt.length >= 2 && bt.length % 2 === 0 && bt.every((t, i) => t != null && (!i || t > bt[i - 1]));
     let breakMinutes = null; if (breakValid) { breakMinutes = 0; for (let i = 1; i < bt.length - 1; i += 2) breakMinutes += bt[i + 1] - bt[i]; }
     const breakLimit = attWeekday(date) === 3 ? 65 : 50, overBreak = updated && breakMinutes != null && breakMinutes > breakLimit;
-    people.push({ name, status: 'present', due, outDue, grace, allowedExit, first, last, lateBy, late: lateBy > grace, earlyLeave, breakMinutes, breakLimit, overBreak, breakExcluded,
+    people.push({ name, status: 'present', due, outDue, grace, allowedExit, first, last, lateBy, late: lateBy > grace && !lateExcused, lateExcused, earlyLeave, breakMinutes, breakLimit, overBreak, breakExcluded,
       halfDay: reasons.length > 0, reasons, exitNote, raw: rec.raw, odd: times.length % 2 === 1 && times.length > 1 });
   }
   return { date, people, unknown: [...unknown], hasData: rows.some((r) => String(r.stamps).trim()) };
@@ -1408,16 +1411,21 @@ function attDaily(date) {
           <option value="pending" ${st === 'pending' ? 'selected' : ''}>Pending review</option><option value="approved" ${st === 'approved' ? 'selected' : ''}>Approve leave / informed</option>
           <option value="uninformed" ${st === 'uninformed' ? 'selected' : ''}>Confirm uninformed</option></select>${a ? `<small>${esc(a.by || '')} · ${fmtFull(a.at)}</small>` : ''}</td>
           <td class="rs">${st === 'approved' ? '—' : rupees(200)}</td></tr>`; }), 'Nobody is on leave.'))}
-    ${attCard('Late arrivals', 'First punch after the in-time plus grace' + (date >= ATT_POLICY ? ' (girls 10 min, others 5 min)' : '') + (wed ? '. Wednesday in-time: girls 9:15, others 9:00.' : '.'), late.length,
-      attTable(['Employee', 'In-time', 'Allowed till', 'Came at', '#Late by', '#Late no. this month', '#Fine'], late.sort((a, b) => b.lateBy - a.lateBy).map((p) => { const n = sum.lateNo.get(date + '|' + p.name) || 0;
-        return `<tr><td><b>${esc(attTitle(p.name))}</b></td><td>${attHm(p.due)}</td><td>${attHm(p.due + p.grace)}</td><td>${attHm(p.first)}</td><td class="rs">${attSpan(p.lateBy)}</td><td class="rs">${n}${n <= 3 ? ' <small>free</small>' : ''}</td><td class="rs">${n > 3 ? rupees(100) : '—'}</td></tr>`; }), 'Nobody was late.'))}
+    ${attCard('Late arrivals', 'First punch after the in-time plus grace' + (date >= ATT_POLICY ? ' (girls 10 min, others 5 min)' : '') + (wed ? '. Wednesday in-time: girls 9:15, others 9:00.' : '.')
+      + ' Press <b>Approve late</b> if the late was allowed: it is then not counted anywhere (no late, no fine, no half day for being late).', late.length,
+      attTable(['Employee', 'In-time', 'Allowed till', 'Came at', '#Late by', '#Late no. this month', '#Fine', 'Approval'], present.filter((p) => p.late || p.lateExcused).sort((a, b) => b.lateBy - a.lateBy).map((p) => {
+        const n = sum.lateNo.get(date + '|' + p.name) || 0, ok = p.lateExcused && attLateOk(date, p.name);
+        return `<tr><td><b>${esc(attTitle(p.name))}</b></td><td>${attHm(p.due)}</td><td>${attHm(p.due + p.grace)}</td><td>${attHm(p.first)}</td><td class="rs">${attSpan(p.lateBy)}</td>
+          <td class="rs">${ok ? '—' : n + (n <= 3 ? ' <small>free</small>' : '')}</td><td class="rs">${!ok && n > 3 ? rupees(100) : '—'}</td>
+          <td>${ok ? `<span class="pill green">Approved</span> <button class="btn ghost small" data-att-late="${esc(p.name)}" data-ok="0" ${attBusy ? 'disabled' : ''}>Undo</button><small>${esc(ok.by || '')} · ${fmtFull(ok.at)}</small>`
+            : `<button class="btn small green" data-att-late="${esc(p.name)}" data-ok="1" ${attBusy ? 'disabled' : ''}>Approve late</button>`}</td></tr>`; }), 'Nobody was late.'))}
     ${attCard('Half days', 'More than 1 hour late, or last punch before 7:00 PM (6:50 PM for girls from 25 Oct). Irfan, Himanshu, Talha and Rocky have no fixed exit.', half.length,
       attTable(['Employee', 'In', 'Out', 'Reason'], half.map((p) => `<tr><td><b>${esc(attTitle(p.name))}</b></td><td>${attHm(p.first)}</td><td>${attHm(p.last)}</td><td style="white-space:normal">${esc(p.reasons.join(' · '))}</td></tr>`), 'No half days.'))}
     ${attCard('Long breaks', `Total of the break punches (out and back in) over ${wed ? 65 : 50} minutes. Only flagged, no fine.`, longBreak.length,
       attTable(['Employee', 'Total breaks', 'Limit', 'Over by'], longBreak.sort((a, b) => b.breakMinutes - a.breakMinutes).map((p) => `<tr><td><b>${esc(attTitle(p.name))}</b></td><td>${attSpan(p.breakMinutes)}</td><td>${p.breakLimit} min</td><td>${attSpan(p.breakMinutes - p.breakLimit)}</td></tr>`), date >= ATT_POLICY ? 'No long breaks.' : 'Break limits start on 25 October.'))}
     ${attCard('Everyone on ' + attFmt(date, { weekday: 'short', day: 'numeric', month: 'short' }), 'In = first punch, Out = last punch.', shown.length,
       attTable(['Employee', 'Shift', 'In', 'Out', 'Allowed exit', 'Breaks', 'Status', 'All punches'], shown.map((p) => {
-        const st = p.status === 'leave' ? pill('On leave', 'purple') : [p.late ? pill('Late ' + attSpan(p.lateBy), 'amber') : pill('On time', 'green'), p.halfDay ? pill('Half day', 'red') : '', p.exitNote ? pill(p.exitNote, 'gray') : '', p.earlyLeave ? pill('Early exit', 'red') : '', p.overBreak ? pill('Long break', 'amber') : ''].join(' ');
+        const st = p.status === 'leave' ? pill('On leave', 'purple') : [p.late ? pill('Late ' + attSpan(p.lateBy), 'amber') : p.lateExcused ? pill('Late approved', 'green') : pill('On time', 'green'), p.halfDay ? pill('Half day', 'red') : '', p.exitNote ? pill(p.exitNote, 'gray') : '', p.earlyLeave ? pill('Early exit', 'red') : '', p.overBreak ? pill('Long break', 'amber') : ''].join(' ');
         return `<tr><td><b>${esc(attTitle(p.name))}</b></td><td>${attHm(p.due)} – ${p.outDue != null ? attHm(p.outDue) : 'Till close'}</td><td>${p.status === 'leave' ? '—' : attHm(p.first)}</td><td>${p.status === 'leave' ? '—' : attHm(p.last)}</td>
           <td>${p.allowedExit != null ? attHm(p.allowedExit) : 'Flexible'}</td><td>${p.status === 'leave' ? '—' : p.breakExcluded ? 'Not checked' : p.breakMinutes == null ? 'Check punches' : attSpan(p.breakMinutes)}</td><td>${st}</td>
           <td class="raw">${esc(p.raw || '—')}${p.odd ? ' <small>odd number of punches</small>' : ''}</td></tr>`; }), '—')
@@ -1504,6 +1512,7 @@ async function viewAttendance(m) {
       <li>Grace from 25 Oct: girls 10 min, others 5 min. More than 1 hour late = half day.</li>
       <li>Last punch before 7:00 PM = half day (6:50 PM for girls). Suman's exit is 7:00 PM. Irfan, Himanshu, Talha and Rocky have no fixed exit.</li>
       <li>First 3 lates in a month are free, then ₹100 each. No late all month = ₹300 bonus. Leave without informing = ₹200.</li>
+      <li>An approved late is not counted anywhere: no late, no fine, no half day for being late, and it does not stop the ₹300 bonus.</li>
       <li>Breaks over 50 min (65 on Wednesday) are flagged, no fine. Mannu, Himanshu and Rocky are not checked.</li>
       <li>PagarBook names: Priyanshi = Diya, Priyanshi Sharma = Siya. Adnan and Raj counted from 24 Oct. Owais has left. Dori is not tracked.</li>
       <li>Uploading the same file again keeps approvals. If a day's punches change, that day's leave approvals must be chosen again.</li></ul></details></section>`;
@@ -1522,6 +1531,12 @@ async function viewAttendance(m) {
   m.querySelectorAll('select[data-att-approve]').forEach((s) => s.onchange = async () => {
     const [d, name] = s.dataset.attApprove.split('|'); attBusy = true; s.disabled = true;
     try { await api('POST', '/api/attendance/approve', { date: d, name, status: s.value, revision: attData.revisions[d] }); toast('Saved'); }
+    catch (err) { toast(err.message, true); }
+    finally { attBusy = false; loadTab(); }
+  });
+  m.querySelectorAll('button[data-att-late]').forEach((b) => b.onclick = async () => {
+    attBusy = true; b.disabled = true;
+    try { await api('POST', '/api/attendance/late', { date, name: b.dataset.attLate, approve: b.dataset.ok === '1' }); toast(b.dataset.ok === '1' ? 'Late approved' : 'Approval removed'); }
     catch (err) { toast(err.message, true); }
     finally { attBusy = false; loadTab(); }
   });
