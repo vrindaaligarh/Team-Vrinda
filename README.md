@@ -59,3 +59,9 @@ syrup cases. Managers and owners can **Verify** every finished job: work tasks i
 The owner can add staff, reset passwords, and change who does which stage under **Staff**,
 and add new short codes under **Task Codes**. Mistakes can be fixed in **All Bills**: click a
 bill row, then "Undo" a stage.
+
+Attendance (owners and MANSI): top button **Attendance**. Upload the PagarBook Punch Report (.xlsx, the whole month is fine,
+or a daily file with Staff Name in B1 and the date in C1). Shows present, on leave, late, half day, long breaks, fines and the
+₹300 no-late bonus per day and per month, with leave approval and a printable report. Rules are listed on the page
+(in-times, grace, half day, fines) and in `public/index.html` (ATT_SCHEDULE). Uploading the same file again keeps approvals;
+a day whose punches changed needs its leave approvals chosen again.

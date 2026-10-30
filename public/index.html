@@ -157,6 +157,22 @@
   .stage-panel { border: 2px solid var(--primary); }
   button.btn.del { color: var(--red); border-color: var(--red); }
   .card.fix { border-color: var(--red); background: var(--red-bg); }
+
+  /* Attendance */
+  .pill.purple { background: #ece8f6; color: #4a3a86; }
+  @media (prefers-color-scheme: dark) { .pill.purple { background: #2c2545; color: #c4b8f0; } }
+  .att-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .att-bar input[type=date], .att-bar input[type=month] { width: auto; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .seg button { border: 0; background: var(--card); color: var(--muted); padding: 9px 14px; font-weight: 700; cursor: pointer; font-size: 14px; }
+  .seg button.on { background: var(--primary); color: var(--primary-text); }
+  .att-fines { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; }
+  .att-fines b { font-size: 17px; }
+  td.raw { white-space: normal; min-width: 180px; font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+  .neg { color: var(--red); } .pos { color: var(--green); }
+  .card h2 .count.att { background: var(--muted); }
+  details.rules summary { cursor: pointer; font-weight: 600; color: var(--primary); }
+  details.rules li { margin: 4px 0; }
 </style>
 </head>
 <body>
@@ -228,10 +244,11 @@ function renderLogin() {
 
 // ---------- shell ----------
 // Top-level sections of the Vrinda Medical Agencies dashboard; Bill Tracker holds every tab below. More sections come later.
-const SECTIONS_ALL = [['bills', 'Bill Tracker'], ['debtors', 'Debtors', (me) => me.is_admin]];
+const SECTIONS_ALL = [['bills', 'Bill Tracker'], ['debtors', 'Debtors', (me) => me.is_admin], ['attendance', 'Attendance', (me) => me.is_admin || me.username === 'mansi']];
 const sections = () => SECTIONS_ALL.filter(([, , ok]) => !ok || ok(state.me));
 function tabs() {
   if (state.section === 'debtors') return [['debtors', 'Debtors']];
+  if (state.section === 'attendance') return [['attendance', 'Attendance']];
   // Owners don't log their own jobs, so they don't get My Jobs.
   const t = state.me.is_admin ? [['other', 'Work']] : [['other', 'Work'], ['mine', 'My Jobs']];
   if (state.me.can_proxy) t.splice(1, 0, ['prep', 'Preparing Entry'], ['proxy', 'Enter for Staff']);
@@ -265,7 +282,7 @@ function render() {
   $('#lo').onclick = async () => { await api('POST', '/api/logout'); state.me = null; render(); };
   $('#pw').onclick = changePassword;
   loadTab();
-  if (['all', 'other', 'status', 'final', 'proxy', 'prep', 'quick', 'board'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
+  if (['all', 'other', 'status', 'final', 'proxy', 'prep', 'quick', 'board', 'attendance'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus, select:focus') && !attBusy) loadTab(); }, 15000);
 }
 async function changePassword() {
   const oldPassword = prompt('Current password'); if (oldPassword == null) return;
@@ -275,7 +292,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, debtors: viewDebtors, incentive: viewIncentive, report: viewReport, items: viewItems, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, debtors: viewDebtors, attendance: viewAttendance, incentive: viewIncentive, report: viewReport, items: viewItems, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -1251,6 +1268,283 @@ async function viewCodes(m) {
   $('#cf').onsubmit = (e) => {
     e.preventDefault(); const f = e.target;
     act(f.querySelector('button'), async () => { await api('POST', '/api/admin/tasks', { code: f.code.value, name: f.name.value, kind: f.kind.value }); state.tasks = (await api('GET', '/api/me')).tasks; }, 'Saved');
+  };
+}
+
+// ---------- Attendance (owners and MANSI): PagarBook punches -> late, half day, leave, fines, bonus ----------
+// Rules (owner, new timings from 25 Oct 2026; counted from 20 Oct). Moved over from the ChatGPT Speed Desk unchanged:
+// - First punch = entry, last punch = exit. No punch on a day that has punches = on leave.
+// - Grace from 25 Oct: girls 10 min, others 5 min. Wednesday entry: girls 9:15, everyone else 9:00.
+// - Late more than 1 hour after the in-time = half day. Last punch before 7:00 PM (6:50 PM for girls from 25 Oct) = half day,
+//   except IRFAN, HIMANSHU, TALHA and ROCKY (no fixed exit). Only one punch after that time = half day (no exit punch).
+// - First 3 lates in a month are free, Rs 100 for each late after that. No late all month = Rs 300 bonus.
+// - Leave without informing = Rs 200 (pending review keeps Rs 200 until approved as informed).
+// - Breaks = middle OUT/IN pairs; flagged over 50 min (65 on Wednesday) from 25 Oct, no fine. MANNU, HIMANSHU, ROCKY not checked.
+const ATT_START = '2026-10-20', ATT_POLICY = '2026-10-25', ATT_HALF_EXIT = '19:00';
+const ATT_BREAK_SKIP = new Set(['MANNU', 'HIMANSHU', 'ROCKY']);
+const attShift = (inTime, outTime, names, extra = {}) => names.map((n) => [n, { inTime, outTime, ...extra }]);
+const ATT_SCHEDULE = new Map([
+  ...attShift('10:00', '19:30', ['AZEEM', 'ABHAY', 'HAMZA', 'SAFFAN', 'SUFIYAN', 'NAVED']),
+  ...attShift('10:00', '19:30', ['OWAIS'], { left: '2026-10-20' }), // has left: never marked on leave, counted only on days with punches
+  ...attShift('10:00', '19:30', ['ADNAN', 'RAJ'], { start: '2026-10-24' }),
+  ...attShift('10:00', '19:45', ['ANAS', 'FARAZ', 'JUNAID', 'REHAN', 'ZUHAIB', 'SAIF']),
+  ...attShift('10:00', null, ['ARUN', 'FARHAN', 'HAYYUL', 'MUKUL', 'SONU', 'VICKY']),
+  ...attShift('10:15', '19:25', ['BHAKTI', 'DIYA', 'MANSI', 'NEHA', 'POOJA', 'RIYA', 'SIYA', 'SHEBI', 'SUMAN'], { girl: true }),
+  ...attShift('10:15', null, ['AFZAL', 'RIZWAN', 'YASH']),
+  ...attShift('10:30', null, ['HIMANSHU', 'IRFAN', 'ROCKY', 'TALHA'], { flexibleExit: true }),
+]);
+// PagarBook name -> roster name. DORI is not tracked.
+const ATT_ALIASES = { 'NEHA SHARMA': 'NEHA', 'MANSI SHARMA': 'MANSI', 'PRIYANSHI': 'DIYA', 'PRIYANSHI SHARMA': 'SIYA', 'HIMANSHU SHARMA': 'HIMANSHU', 'MUKUL KUMAR': 'MUKUL', 'REHAN ALI': 'REHAN', 'RIZWAN MALIK': 'RIZWAN' };
+const ATT_IGNORED = new Set(['DORI']);
+const attNorm = (v) => String(v ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
+const attRoster = (raw) => { const n = attNorm(raw); return ATT_ALIASES[n] || n; };
+const attMins = (t) => { const m = String(t).match(/^([01]?\d|2[0-3]):([0-5]\d)/); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+const attHm = (m) => { if (m == null) return '—'; const h = Math.floor(m / 60), mm = m % 60; return (h % 12 || 12) + ':' + String(mm).padStart(2, '0') + ' ' + (h >= 12 ? 'PM' : 'AM'); };
+const attSpan = (m) => m < 60 ? m + ' min' : Math.floor(m / 60) + ' hr' + (m % 60 ? ' ' + (m % 60) + ' min' : '');
+const attTitle = (n) => n.split(' ').map((w) => w.charAt(0) + w.slice(1).toLowerCase()).join(' ');
+const attWeekday = (d) => new Date(d + 'T12:00:00Z').getUTCDay();
+const attFmt = (d, o = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) => new Intl.DateTimeFormat('en-IN', { ...o, timeZone: 'UTC' }).format(new Date(d + 'T12:00:00Z'));
+const attShiftDay = (d, n) => new Date(Date.parse(d + 'T12:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+const attNow = () => { const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date()).map((x) => [x.type, x.value])); return { date: p.year + '-' + p.month + '-' + p.day, minutes: (Number(p.hour) % 24) * 60 + Number(p.minute) }; };
+const attHasPunch = (s) => String(s || '').split(';').some((t) => attMins(t.trim()) != null);
+let attData = { dates: {}, revisions: {}, approvals: [], uploads: [] }, attBusy = false, attMsg = '';
+
+const attApproval = (date, name) => attData.approvals.find((a) => a.date === date && a.name === name && a.dayRevision === attData.revisions[date]);
+const attInformed = (date, name) => (attApproval(date, name) || {}).status === 'approved';
+const attParse = (stamps) => String(stamps || '').split(';').map((s) => attMins(s.trim())).filter((v) => v != null).sort((a, b) => a - b);
+const attInTime = (name, date) => { const s = ATT_SCHEDULE.get(name); if (!s) return null; if (attWeekday(date) === 3) return attMins(s.girl ? '09:15' : '09:00'); return attMins(s.inTime); };
+
+// One day for every person on the timing list.
+function attClassifyDay(date) {
+  const rows = attData.dates[date] || [], byName = new Map(), unknown = new Set();
+  for (const r of rows) {
+    const n = attRoster(r.name); if (ATT_IGNORED.has(n)) continue;
+    if (!ATT_SCHEDULE.has(n)) { if (String(r.stamps).trim()) unknown.add(attNorm(r.name)); continue; }
+    const prev = byName.get(n), times = attParse(r.stamps);
+    byName.set(n, { raw: prev ? prev.raw + '; ' + r.stamps : r.stamps, duplicate: !!prev, times: prev ? [...prev.times, ...times].sort((a, b) => a - b) : times });
+  }
+  const now = attNow(), people = [];
+  for (const [name, s] of ATT_SCHEDULE) {
+    if (s.start && date < s.start) { people.push({ name, status: 'not-started' }); continue; }
+    const rec = byName.get(name), times = (rec && rec.times) || [];
+    if (s.left && date >= s.left && !times.length) { people.push({ name, status: 'left' }); continue; }
+    const updated = date >= ATT_POLICY, grace = updated ? (s.girl ? 10 : 5) : 0;
+    const due = attInTime(name, date), outDue = name === 'SUMAN' && updated ? attMins('19:00') : s.outTime ? attMins(s.outTime) : null;
+    const allowedExit = s.flexibleExit ? null : updated && s.girl && outDue != null ? outDue - 10 : attMins(ATT_HALF_EXIT);
+    const halfExit = attMins(ATT_HALF_EXIT) - (updated && s.girl ? 10 : 0);
+    if (!times.length) { people.push({ name, status: 'leave', due, outDue, grace, allowedExit, raw: (rec && rec.raw) || '' }); continue; }
+    const first = times[0], last = times.length > 1 ? times[times.length - 1] : null, lateBy = Math.max(0, first - due), reasons = [];
+    if (lateBy > 60) reasons.push('Late by more than 1 hour (' + attSpan(lateBy) + ')');
+    let exitNote = '';
+    if (date === now.date && now.minutes < halfExit && (last == null || last < halfExit)) exitNote = 'Day not over yet';
+    else if (last == null) reasons.push('No exit punch (only one punch at ' + attHm(first) + ')');
+    else if (!s.flexibleExit && last < halfExit) reasons.push('Left at ' + attHm(last) + ', before ' + attHm(halfExit));
+    const earlyLeave = !s.flexibleExit && last != null && last < allowedExit && !(date === now.date && now.minutes < allowedExit);
+    const parts = String(rec.raw).split(';').map((t) => t.trim()), bt = parts.map((t) => /^([01]?\d|2[0-3]):[0-5]\d$/.test(t) ? attMins(t) : null);
+    const breakExcluded = ATT_BREAK_SKIP.has(name);
+    const breakValid = !breakExcluded && !rec.duplicate && bt.length >= 2 && bt.length % 2 === 0 && bt.every((t, i) => t != null && (!i || t > bt[i - 1]));
+    let breakMinutes = null; if (breakValid) { breakMinutes = 0; for (let i = 1; i < bt.length - 1; i += 2) breakMinutes += bt[i + 1] - bt[i]; }
+    const breakLimit = attWeekday(date) === 3 ? 65 : 50, overBreak = updated && breakMinutes != null && breakMinutes > breakLimit;
+    people.push({ name, status: 'present', due, outDue, grace, allowedExit, first, last, lateBy, late: lateBy > grace, earlyLeave, breakMinutes, breakLimit, overBreak, breakExcluded,
+      halfDay: reasons.length > 0, reasons, exitNote, raw: rec.raw, odd: times.length % 2 === 1 && times.length > 1 });
+  }
+  return { date, people, unknown: [...unknown], hasData: rows.some((r) => String(r.stamps).trim()) };
+}
+// Month so far (or up to one day), counting only days with punches from 20 Oct.
+function attMonth(month, upTo) {
+  const days = Object.keys(attData.dates).filter((d) => d.startsWith(month) && d >= ATT_START && (!upTo || d <= upTo)).sort().map(attClassifyDay).filter((d) => d.hasData);
+  const per = new Map([...ATT_SCHEDULE.keys()].map((n) => [n, { name: n, days: 0, present: 0, leaves: 0, uninformed: 0, lates: 0, halfDays: 0, lateFine: 0, leaveFine: 0, overBreakDays: 0 }]));
+  const lateNo = new Map();
+  for (const day of days) for (const p of day.people) {
+    if (p.status === 'not-started' || p.status === 'left') continue;
+    const m = per.get(p.name); m.days++;
+    if (p.status === 'leave') { m.leaves++; if (!attInformed(day.date, p.name)) { m.uninformed++; m.leaveFine += 200; } continue; }
+    m.present++; if (p.overBreak) m.overBreakDays++; if (p.halfDay) m.halfDays++;
+    if (p.late) { m.lates++; lateNo.set(day.date + '|' + p.name, m.lates); if (m.lates > 3) m.lateFine += 100; }
+  }
+  return { days, people: [...per.values()], lateNo };
+}
+
+const attTable = (head, rows, empty) => `<div class="scroll"><table><tr>${head.map((h) => `<th${h.startsWith('#') ? ' class="rs"' : ''}>${esc(h.replace(/^#/, ''))}</th>`).join('')}</tr>
+  ${rows.length ? rows.join('') : `<tr><td colspan="${head.length}" class="empty">${esc(empty)}</td></tr>`}</table></div>`;
+const attCard = (title, note, n, body) => `<section class="card"><h2>${esc(title)}${n != null ? ` <span class="count${n ? '' : ' att'}">${n}</span>` : ''}</h2>${note ? `<p class="sub">${note}</p>` : ''}${body}</section>`;
+
+function attMonthCard(sum, month, upTo) {
+  const now = attNow(), over = month < now.date.slice(0, 7);
+  const rows = sum.people.filter((p) => p.days).sort((a, b) => (b.lateFine + b.leaveFine) - (a.lateFine + a.leaveFine) || b.lates - a.lates || a.name.localeCompare(b.name)).map((p) => {
+    const bonus = p.lates === 0 && p.present > 0 ? 300 : 0, net = bonus - p.lateFine - p.leaveFine;
+    return `<tr><td><b>${esc(attTitle(p.name))}</b></td><td class="rs">${p.present} / ${p.days}</td><td class="rs">${p.leaves}${p.uninformed ? ` <small>${p.uninformed} not approved</small>` : ''}</td>
+      <td class="rs">${p.lates}${p.lates && p.lates <= 3 ? ` <small>${3 - p.lates} free left</small>` : ''}</td><td class="rs">${p.halfDays}</td><td class="rs">${p.overBreakDays}</td>
+      <td class="rs">${p.lateFine ? rupees(p.lateFine) : '—'}</td><td class="rs">${p.leaveFine ? rupees(p.leaveFine) : '—'}</td>
+      <td class="rs">${bonus ? rupees(300) + (over ? '' : ' <small>if no late till month end</small>') : '—'}</td>
+      <td class="rs"><b class="${net < 0 ? 'neg' : net > 0 ? 'pos' : ''}">${net < 0 ? '−' + rupees(-net) : net > 0 ? '+' + rupees(net) : '₹0'}</b></td></tr>`;
+  });
+  const fines = sum.people.reduce((a, p) => a + p.lateFine + p.leaveFine, 0), bonuses = sum.people.filter((p) => p.lates === 0 && p.present > 0).length * 300;
+  return attCard(attFmt(month + '-01', { month: 'long', year: 'numeric' }) + (upTo ? ' up to ' + attFmt(upTo, { day: 'numeric', month: 'short' }) : ''),
+    `${sum.days.length} day${sum.days.length === 1 ? '' : 's'} with punches · fines <b>${rupees(fines)}</b> · bonuses <b>${rupees(bonuses)}</b>. First 3 lates free, then ₹100 each. No late all month = ₹300. Leave without informing = ₹200.`, null,
+    attTable(['Employee', '#Present / days', '#Leave', '#Lates', '#Half days', '#Long breaks', '#Late fine', '#Leave fine', '#Bonus', '#Net'], rows, 'No punches for this month yet.'));
+}
+
+function attDaily(date) {
+  const day = attClassifyDay(date), now = attNow();
+  if (date < ATT_START || !day.hasData) {
+    const latest = Object.keys(attData.dates).filter((d) => d >= ATT_START).sort().pop();
+    return attCard('No punches for ' + attFmt(date), date < ATT_START ? 'Attendance rules start on 20 October 2026.' : date > now.date ? 'This day has not happened yet.' : 'Upload the PagarBook file that has this day (closed days have no punches).', null,
+      latest ? `<button class="btn ghost" data-att-go="${latest}">Go to latest day (${attFmt(latest, { day: 'numeric', month: 'short' })})</button>` : '') + attMonthCard(attMonth(date.slice(0, 7)), date.slice(0, 7));
+  }
+  const sum = attMonth(date.slice(0, 7), date), wed = attWeekday(date) === 3, rev = attData.revisions[date];
+  const present = day.people.filter((p) => p.status === 'present'), leave = day.people.filter((p) => p.status === 'leave');
+  const late = present.filter((p) => p.late), half = present.filter((p) => p.halfDay), longBreak = present.filter((p) => p.overBreak);
+  const lateFine = late.reduce((a, p) => a + ((sum.lateNo.get(date + '|' + p.name) || 0) > 3 ? 100 : 0), 0);
+  const leaveFine = leave.filter((p) => !attInformed(date, p.name)).length * 200;
+  const stat = (n, l) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`;
+  const shown = day.people.filter((p) => p.status !== 'not-started' && p.status !== 'left');
+  const pill = (t, c) => `<span class="pill ${c}">${esc(t)}</span>`;
+  return `<div class="stats">${stat(present.length, 'Present')}${stat(leave.length, 'On leave')}${stat(late.length, 'Late')}${stat(half.length, 'Half day')}</div>
+    <section class="card att-fines"><b>Fines for this day: ${rupees(lateFine + leaveFine)}</b><span class="sub" style="margin:0">Late ${rupees(lateFine)} (4th late onwards) · Leave without informing ${rupees(leaveFine)}</span></section>
+    ${attCard('On leave', 'No punch on this day. Choose <b>Approve leave / informed</b> if they told you (no fine), or <b>Confirm uninformed</b> (₹200). Pending keeps ₹200 until you decide.', leave.length,
+      attTable(['Employee', 'Approval', '#Fine'], leave.map((p) => { const a = attApproval(date, p.name), st = (a && a.status) || 'pending';
+        return `<tr><td><b>${esc(attTitle(p.name))}</b></td><td><select data-att-approve="${esc(date + '|' + p.name)}" ${attBusy || rev === undefined ? 'disabled' : ''}>
+          <option value="pending" ${st === 'pending' ? 'selected' : ''}>Pending review</option><option value="approved" ${st === 'approved' ? 'selected' : ''}>Approve leave / informed</option>
+          <option value="uninformed" ${st === 'uninformed' ? 'selected' : ''}>Confirm uninformed</option></select>${a ? `<small>${esc(a.by || '')} · ${fmtFull(a.at)}</small>` : ''}</td>
+          <td class="rs">${st === 'approved' ? '—' : rupees(200)}</td></tr>`; }), 'Nobody is on leave.'))}
+    ${attCard('Late arrivals', 'First punch after the in-time plus grace' + (date >= ATT_POLICY ? ' (girls 10 min, others 5 min)' : '') + (wed ? '. Wednesday in-time: girls 9:15, others 9:00.' : '.'), late.length,
+      attTable(['Employee', 'In-time', 'Allowed till', 'Came at', '#Late by', '#Late no. this month', '#Fine'], late.sort((a, b) => b.lateBy - a.lateBy).map((p) => { const n = sum.lateNo.get(date + '|' + p.name) || 0;
+        return `<tr><td><b>${esc(attTitle(p.name))}</b></td><td>${attHm(p.due)}</td><td>${attHm(p.due + p.grace)}</td><td>${attHm(p.first)}</td><td class="rs">${attSpan(p.lateBy)}</td><td class="rs">${n}${n <= 3 ? ' <small>free</small>' : ''}</td><td class="rs">${n > 3 ? rupees(100) : '—'}</td></tr>`; }), 'Nobody was late.'))}
+    ${attCard('Half days', 'More than 1 hour late, or last punch before 7:00 PM (6:50 PM for girls from 25 Oct). Irfan, Himanshu, Talha and Rocky have no fixed exit.', half.length,
+      attTable(['Employee', 'In', 'Out', 'Reason'], half.map((p) => `<tr><td><b>${esc(attTitle(p.name))}</b></td><td>${attHm(p.first)}</td><td>${attHm(p.last)}</td><td style="white-space:normal">${esc(p.reasons.join(' · '))}</td></tr>`), 'No half days.'))}
+    ${attCard('Long breaks', `Total of the break punches (out and back in) over ${wed ? 65 : 50} minutes. Only flagged, no fine.`, longBreak.length,
+      attTable(['Employee', 'Total breaks', 'Limit', 'Over by'], longBreak.sort((a, b) => b.breakMinutes - a.breakMinutes).map((p) => `<tr><td><b>${esc(attTitle(p.name))}</b></td><td>${attSpan(p.breakMinutes)}</td><td>${p.breakLimit} min</td><td>${attSpan(p.breakMinutes - p.breakLimit)}</td></tr>`), date >= ATT_POLICY ? 'No long breaks.' : 'Break limits start on 25 October.'))}
+    ${attCard('Everyone on ' + attFmt(date, { weekday: 'short', day: 'numeric', month: 'short' }), 'In = first punch, Out = last punch.', shown.length,
+      attTable(['Employee', 'Shift', 'In', 'Out', 'Allowed exit', 'Breaks', 'Status', 'All punches'], shown.map((p) => {
+        const st = p.status === 'leave' ? pill('On leave', 'purple') : [p.late ? pill('Late ' + attSpan(p.lateBy), 'amber') : pill('On time', 'green'), p.halfDay ? pill('Half day', 'red') : '', p.exitNote ? pill(p.exitNote, 'gray') : '', p.earlyLeave ? pill('Early exit', 'red') : '', p.overBreak ? pill('Long break', 'amber') : ''].join(' ');
+        return `<tr><td><b>${esc(attTitle(p.name))}</b></td><td>${attHm(p.due)} – ${p.outDue != null ? attHm(p.outDue) : 'Till close'}</td><td>${p.status === 'leave' ? '—' : attHm(p.first)}</td><td>${p.status === 'leave' ? '—' : attHm(p.last)}</td>
+          <td>${p.allowedExit != null ? attHm(p.allowedExit) : 'Flexible'}</td><td>${p.status === 'leave' ? '—' : p.breakExcluded ? 'Not checked' : p.breakMinutes == null ? 'Check punches' : attSpan(p.breakMinutes)}</td><td>${st}</td>
+          <td class="raw">${esc(p.raw || '—')}${p.odd ? ' <small>odd number of punches</small>' : ''}</td></tr>`; }), '—')
+      + (day.people.some((p) => p.status === 'not-started') ? `<p class="sub" style="margin:8px 0 0">Not counted yet: ${esc(day.people.filter((p) => p.status === 'not-started').map((p) => attTitle(p.name) + ' (from ' + attFmt(ATT_SCHEDULE.get(p.name).start, { day: 'numeric', month: 'short' }) + ')').join(', '))}.</p>` : '')
+      + (day.unknown.length ? `<p class="sub" style="margin:8px 0 0">In PagarBook but not on the timing list (not counted): ${esc(day.unknown.map(attTitle).join(', '))}.</p>` : ''))}`
+    + attMonthCard(sum, date.slice(0, 7), date);
+}
+
+// PagarBook files: the monthly Punch Report (Staff Name, then one column per date like 25-10-2026) or a daily file (Staff Name in B1, date in C1).
+function attCellDate(v) {
+  if (v instanceof Date && !isNaN(v)) return v.toISOString().slice(0, 10);
+  if (typeof v === 'number' && v > 30000 && v < 80000) return new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 864e5).toISOString().slice(0, 10);
+  const m = typeof v === 'string' && v.trim().match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  return m ? m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0') : null;
+}
+const attCellStamps = (v) => typeof v === 'number' && v >= 0 && v < 1 ? (() => { const t = Math.round(v * 1440); return String(Math.floor(t / 60)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0'); })() : String(v ?? '').trim();
+function readPunchBook(wb, fileName, today) {
+  const days = [], skipped = [], outside = [];
+  for (const sn of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' });
+    const head = rows[0] || [], nc = head.findIndex((h) => attNorm(h).replace(/ /g, '') === 'STAFFNAME');
+    if (nc < 0) { skipped.push(sn + ' (no Staff Name heading)'); continue; }
+    let dated = 0;
+    for (let c = nc + 1; c < head.length; c++) {
+      const d = attCellDate(head[c]); if (!d) continue; dated++;
+      const list = rows.slice(1).filter((r) => typeof r[nc] === 'string' && r[nc].trim()).map((r) => ({ name: r[nc].trim(), stamps: attCellStamps(r[c]) }));
+      if (!list.some((r) => attHasPunch(r.stamps))) continue; // shop closed / no punches that day
+      if (d < ATT_START || d > today) { outside.push(d); continue; }
+      if (days.some((x) => x.date === d)) throw new Error('Two sheets have ' + d + '. Choose one file per date.');
+      days.push({ date: d, rows: list, source: fileName });
+    }
+    if (!dated) skipped.push(sn + ' (no dates in the heading row)');
+  }
+  return { days, skipped, outside };
+}
+
+function attPrint(date, monthly) {
+  const sum = attMonth(date.slice(0, 7), monthly ? undefined : date), days = monthly ? sum.days : sum.days.filter((d) => d.date === date), per = new Map();
+  if (!days.length) return toast('No punches for this period to print', true);
+  for (const day of days) for (const p of day.people) {
+    if (p.status === 'not-started' || p.status === 'left') continue;
+    if (!per.has(p.name)) per.set(p.name, { name: p.name, lates: 0, halfDays: 0, leaves: 0, approved: 0, uninformed: 0, pending: 0, lateFine: 0, leaveFine: 0, dates: [] });
+    const r = per.get(p.name), notes = [];
+    if (p.late) { r.lates++; r.lateFine += (sum.lateNo.get(day.date + '|' + p.name) || 0) > 3 ? 100 : 0; notes.push('Late'); }
+    if (p.halfDay) { r.halfDays++; notes.push('Half day'); }
+    if (p.status === 'leave') { r.leaves++; const a = attApproval(day.date, p.name), st = a && a.status === 'approved' ? 'approved' : a && a.status === 'uninformed' ? 'uninformed' : 'pending'; r[st]++; if (st !== 'approved') r.leaveFine += 200; notes.push(st === 'approved' ? 'Informed leave' : st === 'uninformed' ? 'Uninformed leave' : 'Leave (pending)'); }
+    if (notes.length) r.dates.push(day.date.slice(8) + ': ' + notes.join(', '));
+  }
+  const list = [...per.values()].filter((r) => r.lates || r.halfDays || r.leaves).sort((a, b) => (b.lateFine + b.leaveFine) - (a.lateFine + a.leaveFine) || a.name.localeCompare(b.name));
+  const lt = list.reduce((n, r) => n + r.lateFine, 0), lv = list.reduce((n, r) => n + r.leaveFine, 0);
+  const period = monthly ? attFmt(date.slice(0, 7) + '-01', { month: 'long', year: 'numeric' }) : attFmt(date);
+  const t = (head, rows) => `<table><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr>${rows.join('') || `<tr><td colspan="${head.length}">No late arrivals, half days or leave.</td></tr>`}</table>`;
+  const old = document.getElementById('attPrint'); if (old) old.remove();
+  const f = document.createElement('iframe'); f.id = 'attPrint'; f.style.cssText = 'position:fixed;left:-10000px;top:0;width:1100px;height:800px;border:0'; document.body.appendChild(f);
+  f.onload = () => { const w = f.contentWindow; w.addEventListener('afterprint', () => f.remove(), { once: true }); w.focus(); w.print(); };
+  f.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><title>Vrinda Attendance ${esc(period)}</title><style>@page{size:A4 landscape;margin:12mm}body{font:11px Arial,sans-serif;color:#111}h1{font-size:20px;margin:0 0 4px}h2{font-size:14px}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border:1px solid #aaa;padding:6px;text-align:left}tr{break-inside:avoid}</style></head><body>
+    <h1>Vrinda Medical Agencies</h1><h2>Attendance &amp; penalties · ${esc(period)}</h2><p>${days.length} day(s) with punches · Printed ${esc(new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }))}<br>Late penalties ${rupees(lt)} · Leave penalties ${rupees(lv)} · Total <b>${rupees(lt + lv)}</b></p>
+    ${t(['Employee', 'Late days', 'Half days', 'Leave days', 'Informed leave', 'Confirmed uninformed', 'Pending review', 'Late penalty', 'Leave penalty', 'Total penalty'], list.map((r) => `<tr><td>${esc(attTitle(r.name))}</td><td>${r.lates}</td><td>${r.halfDays}</td><td>${r.leaves}</td><td>${r.approved}</td><td>${r.uninformed}</td><td>${r.pending}</td><td>${rupees(r.lateFine)}</td><td>${rupees(r.leaveFine)}</td><td>${rupees(r.lateFine + r.leaveFine)}</td></tr>`))}
+    <p>First 3 lates in a month are free; each late after that is ₹100. Informed leave has no fine. Uninformed and pending leave are ₹200 per day. Half days are counted, with no separate money fine.</p>
+    ${monthly ? '<h2>Dates</h2>' + t(['Employee', 'Days'], list.map((r) => `<tr><td>${esc(attTitle(r.name))}</td><td>${r.dates.map(esc).join('<br>')}</td></tr>`)) : ''}</body></html>`;
+}
+
+async function viewAttendance(m) {
+  attData = await api('GET', '/api/attendance');
+  const now = attNow(), today = attData.today || now.date;
+  const loaded = Object.keys(attData.dates).filter((d) => d >= ATT_START).sort();
+  if (!filters.attDate) filters.attDate = loaded.includes(today) || !loaded.length ? today : loaded[loaded.length - 1];
+  const date = filters.attDate, monthly = filters.attMode === 'monthly', up = attData.uploads.find((u) => u.date === date);
+  const lastUp = attData.uploads.slice().sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1))[0];
+  m.innerHTML = `<section class="card"><div class="att-bar">
+      <div class="seg"><button data-att-mode="daily" class="${monthly ? '' : 'on'}">Daily</button><button data-att-mode="monthly" class="${monthly ? 'on' : ''}">Monthly</button></div>
+      ${monthly ? `<button class="btn ghost small" data-att-step="-1">◀</button><input type="month" id="attmonth" min="2026-10" max="${today.slice(0, 7)}" value="${date.slice(0, 7)}"><button class="btn ghost small" data-att-step="1">▶</button>`
+        : `<button class="btn ghost small" data-att-step="-1">◀</button><input type="date" id="attdate" min="${ATT_START}" max="${today}" value="${date}"><button class="btn ghost small" data-att-step="1">▶</button><button class="btn ghost small" data-att-go="${today}">Today</button>`}
+      <span class="grow"></span>
+      <button class="btn ghost small" id="attrefresh">↻ Refresh</button><button class="btn ghost small" id="attprint">🖨 Print report</button>
+      <label class="btn small green">⬆ Upload PagarBook file<input type="file" id="attfile" accept=".xlsx,.xls" multiple hidden></label></div>
+    <p class="sub" style="margin:8px 0 0">${monthly ? attFmt(date.slice(0, 7) + '-01', { month: 'long', year: 'numeric' }) + ' · whole month' : attFmt(date)}${!monthly && up ? ` · from <b>${esc(up.source || 'file')}</b> (upload ${up.revision}) by ${esc(up.updatedBy)} · ${fmtFull(up.updatedAt)}` : ''}
+      ${lastUp ? `<br>Last upload: ${fmtFull(lastUp.updatedAt)} by ${esc(lastUp.updatedBy)}. Days loaded: ${loaded.length}.` : '<br>No file uploaded yet. Upload the PagarBook Punch Report (the whole month is fine).'}</p>
+    ${attMsg ? `<p class="sub" style="margin:6px 0 0;color:var(--text)"><b>${esc(attMsg)}</b></p>` : ''}</section>
+    ${monthly ? attMonthCard(attMonth(date.slice(0, 7)), date.slice(0, 7)) : attDaily(date)}
+    <section class="card"><details class="rules"><summary>Attendance rules &amp; timings</summary><ul class="sub">
+      <li>First punch = entry, last punch = exit. No punch on a working day = on leave. Days with no punches at all (shop closed) are not counted.</li>
+      <li>In-time: 10:00 AM (most), 10:15 AM (girls, Afzal, Rizwan, Yash), 10:30 AM (Irfan, Himanshu, Rocky, Talha). Wednesday: girls 9:15 AM, everyone else 9:00 AM.</li>
+      <li>Grace from 25 Oct: girls 10 min, others 5 min. More than 1 hour late = half day.</li>
+      <li>Last punch before 7:00 PM = half day (6:50 PM for girls). Suman's exit is 7:00 PM. Irfan, Himanshu, Talha and Rocky have no fixed exit.</li>
+      <li>First 3 lates in a month are free, then ₹100 each. No late all month = ₹300 bonus. Leave without informing = ₹200.</li>
+      <li>Breaks over 50 min (65 on Wednesday) are flagged, no fine. Mannu, Himanshu and Rocky are not checked.</li>
+      <li>PagarBook names: Priyanshi = Diya, Priyanshi Sharma = Siya. Adnan and Raj counted from 24 Oct. Owais has left. Dori is not tracked.</li>
+      <li>Uploading the same file again keeps approvals. If a day's punches change, that day's leave approvals must be chosen again.</li></ul></details></section>`;
+  const go = (d) => { filters.attDate = d; attMsg = ''; loadTab(); };
+  m.querySelectorAll('[data-att-mode]').forEach((b) => b.onclick = () => { filters.attMode = b.dataset.attMode; attMsg = ''; loadTab(); });
+  m.querySelectorAll('[data-att-go]').forEach((b) => b.onclick = () => { filters.attMode = 'daily'; go(b.dataset.attGo); });
+  m.querySelectorAll('[data-att-step]').forEach((b) => b.onclick = () => {
+    const n = +b.dataset.attStep;
+    if (monthly) { const [y, mo] = date.slice(0, 7).split('-').map(Number), d = new Date(Date.UTC(y, mo - 1 + n, 1)).toISOString().slice(0, 7); if (d >= '2026-10' && d <= today.slice(0, 7)) go(d + '-01'); }
+    else { const d = attShiftDay(date, n); if (d >= ATT_START && d <= today) go(d); }
+  });
+  if ($('#attdate')) $('#attdate').onchange = (e) => e.target.value && go(e.target.value);
+  if ($('#attmonth')) $('#attmonth').onchange = (e) => e.target.value && go(e.target.value + '-01');
+  $('#attrefresh').onclick = () => { attMsg = ''; loadTab().then(() => toast('Attendance refreshed')); };
+  $('#attprint').onclick = () => attPrint(date, monthly);
+  m.querySelectorAll('select[data-att-approve]').forEach((s) => s.onchange = async () => {
+    const [d, name] = s.dataset.attApprove.split('|'); attBusy = true; s.disabled = true;
+    try { await api('POST', '/api/attendance/approve', { date: d, name, status: s.value, revision: attData.revisions[d] }); toast('Saved'); }
+    catch (err) { toast(err.message, true); }
+    finally { attBusy = false; loadTab(); }
+  });
+  $('#attfile').onchange = async (e) => {
+    const files = [...e.target.files]; e.target.value = ''; if (!files.length) return;
+    attBusy = true;
+    try {
+      toast('Reading ' + files.map((f) => f.name).join(', ') + '…'); await loadXlsx();
+      const days = [], skipped = [], outside = [];
+      for (const f of files) {
+        const r = readPunchBook(XLSX.read(await f.arrayBuffer()), f.name, today);
+        for (const d of r.days) { if (days.some((x) => x.date === d.date)) throw new Error('Two files have ' + d.date + '. Choose one file per date.'); days.push(d); }
+        skipped.push(...r.skipped); outside.push(...r.outside);
+      }
+      if (!days.length) throw new Error(outside.length ? 'Only days before 20 October were found in the file.' : 'No punches found. Use the PagarBook Punch Report (Staff Name column, then one column per date).');
+      await api('POST', '/api/attendance/upload', { days });
+      days.sort((a, b) => a.date.localeCompare(b.date));
+      attMsg = `Saved ${days.length} day${days.length > 1 ? 's' : ''}: ${attFmt(days[0].date, { day: 'numeric', month: 'short' })}${days.length > 1 ? ' to ' + attFmt(days[days.length - 1].date, { day: 'numeric', month: 'short' }) : ''}.`
+        + (outside.length ? ` Days before 20 Oct were left out.` : '') + (skipped.length ? ' Skipped: ' + skipped.join(', ') + '.' : '');
+      filters.attDate = days[days.length - 1].date; filters.attMode = 'daily';
+      toast('Attendance saved');
+    } catch (err) { toast(err.message, true); }
+    finally { attBusy = false; loadTab(); }
   };
 }
 

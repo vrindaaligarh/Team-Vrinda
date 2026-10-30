@@ -343,6 +343,40 @@ migrate('2026-10-30-item-verify', () => {
     ALTER TABLE syrup_cases ADD COLUMN verified_by INTEGER REFERENCES users(id); ALTER TABLE syrup_cases ADD COLUMN verified_at TEXT;`);
 });
 
+// Attendance (owner, 2026-10-30): PagarBook punches uploaded by owners or MANSI, one row per day, plus leave approvals.
+// Approvals belong to one revision of a day: uploading that day again needs fresh approval.
+migrate('2026-10-30-attendance', () => {
+  db.exec(`CREATE TABLE attendance_days (date TEXT PRIMARY KEY, rows TEXT NOT NULL, source TEXT, revision INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL, updated_by INTEGER REFERENCES users(id));
+    CREATE TABLE attendance_approvals (date TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, day_revision INTEGER NOT NULL,
+      at TEXT NOT NULL, by INTEGER REFERENCES users(id), PRIMARY KEY (date, name));`);
+});
+
+// ---------- attendance ----------
+// Same roster and PagarBook name matching as the Attendance tab (public/index.html, ATT_*). Rules start 20 Oct 2026.
+const ATT_START = '2026-10-20';
+const ATT_ALIASES = { 'NEHA SHARMA': 'NEHA', 'MANSI SHARMA': 'MANSI', 'PRIYANSHI': 'DIYA', 'PRIYANSHI SHARMA': 'SIYA', 'HIMANSHU SHARMA': 'HIMANSHU',
+  'MUKUL KUMAR': 'MUKUL', 'REHAN ALI': 'REHAN', 'RIZWAN MALIK': 'RIZWAN' };
+const ATT_NAMES = ['AZEEM', 'ABHAY', 'HAMZA', 'SAFFAN', 'SUFIYAN', 'OWAIS', 'NAVED', 'ADNAN', 'RAJ', 'ANAS', 'FARAZ', 'JUNAID', 'REHAN', 'ZUHAIB', 'SAIF',
+  'ARUN', 'FARHAN', 'HAYYUL', 'MUKUL', 'SONU', 'VICKY', 'BHAKTI', 'DIYA', 'MANSI', 'NEHA', 'POOJA', 'RIYA', 'SIYA', 'SHEBI', 'SUMAN', 'AFZAL', 'RIZWAN', 'YASH',
+  'HIMANSHU', 'IRFAN', 'ROCKY', 'TALHA'];
+const ATT_FROM = { ADNAN: '2026-10-24', RAJ: '2026-10-24' };
+const ATT_LEFT = { OWAIS: '2026-10-20' }; // left: never marked on leave, counted only on days he punched
+const attName = (v) => { const n = String(v || '').trim().replace(/\s+/g, ' ').toUpperCase(); return ATT_ALIASES[n] || n; };
+const attHasPunch = (s) => String(s || '').split(';').some((t) => /^([01]?\d|2[0-3]):[0-5]\d/.test(t.trim()));
+const istToday = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+const canAttendance = (u) => !!(u.is_admin || u.username === 'mansi');
+function attendanceData() {
+  const days = db.prepare('SELECT d.*, x.name AS by_name FROM attendance_days d LEFT JOIN users x ON x.id = d.updated_by ORDER BY date').all();
+  const out = { dates: {}, revisions: {}, uploads: [], approvals: [], today: istToday() };
+  for (const d of days) {
+    out.dates[d.date] = JSON.parse(d.rows); out.revisions[d.date] = d.revision;
+    out.uploads.push({ date: d.date, source: d.source, revision: d.revision, updatedAt: d.updated_at, updatedBy: d.by_name || '' });
+  }
+  out.approvals = db.prepare('SELECT a.date, a.name, a.status, a.day_revision AS dayRevision, a.at, x.name AS by FROM attendance_approvals a LEFT JOIN users x ON x.id = a.by').all();
+  return out;
+}
+
 // ---------- helpers ----------
 // Adds .cases (syrup case name + rack) to work rows of the Syrup cases task.
 function withCases(rows) {
@@ -702,6 +736,57 @@ const routes = {
       LEFT JOIN (SELECT party, area, SUM(amount) AS amount FROM debtor_rows WHERE date = ? GROUP BY party, area) p ON p.party = r.party AND p.area = r.area
       WHERE r.date = ? ORDER BY r.amount DESC LIMIT 100`).all(prev ? prev.date : '', date) : [];
     send(res, 200, { days, date, prev: prev ? prev.date : null, top });
+  },
+  // Attendance (owners and MANSI): every uploaded day, its revision, and the leave approvals.
+  'GET /api/attendance': async (req, res, u) => {
+    if (!canAttendance(u)) fail(403, 'Attendance is only for the owner and Mansi');
+    send(res, 200, attendanceData(), { 'Cache-Control': 'no-store' });
+  },
+  // Upload: each day in the file replaces that whole day (new revision). All days are checked before anything is saved.
+  'POST /api/attendance/upload': async (req, res, u) => {
+    if (!canAttendance(u)) fail(403, 'Attendance is only for the owner and Mansi');
+    const { days } = await readBody(req, 5e6);
+    if (!Array.isArray(days) || !days.length || days.length > 62) fail(400, 'No days with punches found in the file');
+    const today = istToday(), seen = new Set();
+    for (const d of days) {
+      if (!d || !/^\d{4}-\d{2}-\d{2}$/.test(d.date) || d.date < ATT_START || d.date > today) fail(400, `Day ${d && d.date} is outside ${ATT_START} to today`);
+      if (seen.has(d.date)) fail(400, `Two sheets or columns have ${d.date}. Choose one source per date.`);
+      seen.add(d.date);
+      if (!Array.isArray(d.rows) || !d.rows.length || d.rows.length > 350) fail(400, `Bad rows for ${d.date}`);
+      for (const r of d.rows) {
+        if (!r || typeof r.name !== 'string' || !r.name.trim() || r.name.length > 100 || typeof r.stamps !== 'string' || r.stamps.length > 1000) fail(400, `Bad row on ${d.date}`);
+      }
+      if (!d.rows.some((r) => attHasPunch(r.stamps))) fail(400, `No punches on ${d.date}`);
+    }
+    const t = now();
+    db.exec('BEGIN');
+    try {
+      for (const d of days) {
+        const rows = JSON.stringify(d.rows.map((r) => ({ name: r.name.trim(), stamps: r.stamps.trim() })));
+        const old = db.prepare('SELECT revision, rows FROM attendance_days WHERE date = ?').get(d.date);
+        if (old && old.rows === rows) continue; // same punches again: keep the revision and its approvals
+        db.prepare(`INSERT INTO attendance_days (date, rows, source, revision, updated_at, updated_by) VALUES (?, ?, ?, 1, ?, ?)
+          ON CONFLICT(date) DO UPDATE SET rows = excluded.rows, source = excluded.source, revision = revision + 1, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
+          .run(d.date, rows, String(d.source || '').slice(0, 200), t, u.id);
+      }
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    send(res, 200, { ok: true, saved: days.map((d) => d.date) });
+  },
+  // Leave approval for one person on one day: approved (informed, no fine), uninformed (Rs 200) or pending (Rs 200 for now).
+  'POST /api/attendance/approve': async (req, res, u) => {
+    if (!canAttendance(u)) fail(403, 'Attendance is only for the owner and Mansi');
+    const { date, name, status, revision } = await readBody(req);
+    if (!['approved', 'uninformed', 'pending'].includes(status)) fail(400, 'Choose approve, uninformed or pending');
+    const day = db.prepare('SELECT * FROM attendance_days WHERE date = ?').get(String(date || ''));
+    if (!day) fail(404, 'No attendance saved for this day');
+    if (day.revision !== Number(revision)) fail(409, 'This day was uploaded again. Press Refresh and choose again.');
+    const n = attName(name), rows = JSON.parse(day.rows);
+    const absent = ATT_NAMES.includes(n) && !(ATT_FROM[n] && day.date < ATT_FROM[n]) && !(ATT_LEFT[n] && day.date >= ATT_LEFT[n])
+      && !rows.some((r) => attName(r.name) === n && attHasPunch(r.stamps));
+    if (!absent) fail(400, `${n} is not on leave that day`);
+    db.prepare('INSERT OR REPLACE INTO attendance_approvals (date, name, status, day_revision, at, by) VALUES (?, ?, ?, ?, ?, ?)').run(day.date, n, status, day.revision, now(), u.id);
+    send(res, 200, { ok: true });
   },
   'POST /api/bills/edit': async (req, res, u) => {
     const body = await readBody(req);
