@@ -37,7 +37,7 @@
   .card h2 { margin: 0 0 4px; font-size: 17px; display: flex; align-items: center; gap: 8px; }
   .code { display: inline-grid; place-items: center; min-width: 30px; height: 30px; padding: 0 6px; border-radius: 8px; background: var(--primary); color: var(--primary-text); font-weight: 700; font-size: 14px; }
   .sub { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
-  button.btn { border: 0; border-radius: 10px; padding: 10px 16px; font-weight: 700; font-size: 15px; cursor: pointer; background: var(--primary); color: var(--primary-text); }
+  button.btn, label.btn { display: inline-block; border: 0; border-radius: 10px; padding: 10px 16px; font-weight: 700; font-size: 15px; cursor: pointer; background: var(--primary); color: var(--primary-text); }
   button.btn.green { background: var(--green); color: #fff; }
   button.btn.amber { background: #d29922; color: #1d1600; }
   button.btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); font-weight: 600; }
@@ -106,6 +106,13 @@
   .qk-bill b { font: 700 17px ui-monospace, monospace; }
   .qk-bill .grow { flex: 1; font-size: 13px; color: var(--muted); }
   .qk-bill .btn { padding: 10px 18px; font-size: 15px; }
+
+  /* Debtors */
+  .rs { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .up { color: var(--red); } .down { color: var(--green); }
+  .dbar { height: 6px; border-radius: 3px; background: var(--primary); opacity: .7; min-width: 2px; }
+  tr.pick { background: var(--amber-bg); }
+  tr[data-day] { cursor: pointer; }
   #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; display: none; z-index: 10; max-width: 90vw; }
   #updating { position: fixed; left: 0; right: 0; top: 0; background: #9a6700; color: #fff; padding: 12px 16px; text-align: center; font-weight: 600; z-index: 20; }
   #toast.err { background: var(--red); color: #fff; }
@@ -218,8 +225,10 @@ function renderLogin() {
 
 // ---------- shell ----------
 // Top-level sections of the Vrinda Medical Agencies dashboard; Bill Tracker holds every tab below. More sections come later.
-const SECTIONS = [['bills', 'Bill Tracker']];
+const SECTIONS_ALL = [['bills', 'Bill Tracker'], ['debtors', 'Debtors', (me) => me.is_admin]];
+const sections = () => SECTIONS_ALL.filter(([, , ok]) => !ok || ok(state.me));
 function tabs() {
+  if (state.section === 'debtors') return [['debtors', 'Debtors']];
   // Owners don't log their own jobs, so they don't get My Jobs.
   const t = state.me.is_admin ? [['other', 'Work']] : [['other', 'Work'], ['mine', 'My Jobs']];
   if (state.me.can_proxy) t.splice(1, 0, ['prep', 'Preparing Entry'], ['proxy', 'Enter for Staff']);
@@ -241,11 +250,15 @@ function render() {
       <span class="sub" style="margin:0">${esc(state.me.name)}${myCodes ? " · " + esc(myCodes) : ""}</span>
       <button class="btn ghost small" id="pw">Password</button>
       <button class="btn ghost small" id="lo">Log out</button></header>
-    <div class="sections">${SECTIONS.map(([k, l]) => `<button data-section="${k}" class="${state.section === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="sections">${sections().map(([k, l]) => `<button data-section="${k}" class="${state.section === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <nav>${tabs().map(([k, l]) => `<button data-tab="${k}" class="${state.tab === k ? 'on' : ''}">${l}</button>`).join('')}</nav>
     <main><div id="fixbar"></div><div id="main"></div></main>`;
   $('nav').onclick = (e) => { const k = e.target.dataset.tab; if (k) { state.tab = k; render(); } };
-  $('.sections').onclick = (e) => { const k = e.target.dataset.section; if (k) { state.section = k; render(); } };
+  $('.sections').onclick = (e) => {
+    const k = e.target.dataset.section; if (!k || k === state.section) return;
+    if (state.section === 'bills') state.billTab = state.tab;
+    state.section = k; state.tab = k === 'bills' ? state.billTab || tabs()[0][0] : tabs()[0][0]; render();
+  };
   $('#lo').onclick = async () => { await api('POST', '/api/logout'); state.me = null; render(); };
   $('#pw').onclick = changePassword;
   loadTab();
@@ -259,7 +272,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, debtors: viewDebtors, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -817,6 +830,90 @@ async function viewQuick(m) {
     try { await api('POST', '/api/stage', { bill_id: +en.dataset.qend, task_code: 'PR', action: 'end' }); toast('Ended at ' + fmtTime(new Date().toISOString())); await refresh(); }
     catch (err) { toast(err.message, true); en.disabled = false; }
   };
+}
+
+// ---------- Debtors (owners): upload Debtors.xls, see day-wise totals and the top 100 ----------
+const rupees = (n) => '₹' + Math.round(n).toLocaleString('en-IN');
+const loadXlsx = () => window.XLSX ? Promise.resolve() : new Promise((ok, bad) => { const sc = document.createElement('script'); sc.src = '/xlsx.full.min.js'; sc.onload = ok; sc.onerror = () => bad(new Error('Could not load the Excel reader')); document.head.appendChild(sc); });
+// Sheet names are days like "18 OCTOBER" (no year: the latest such date not after tomorrow), or 18-10-2026 / 2026-10-18.
+function sheetDate(name) {
+  const t = name.trim().toUpperCase(), MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  const iso = (y, m, d) => (m >= 1 && m <= 12 && d >= 1 && d <= 31 ? `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}` : null);
+  let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(t); if (m) return iso(+m[1], +m[2], +m[3]);
+  m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/.exec(t); if (m) return iso(m[3].length === 2 ? 2000 + +m[3] : +m[3], +m[2], +m[1]);
+  m = /^(\d{1,2})\s*[-/.]?\s*([A-Z]{3})[A-Z]*\.?\s*[-/,]?\s*(\d{4})?$/.exec(t);
+  if (m && MON.includes(m[2])) {
+    const mon = MON.indexOf(m[2]) + 1; if (m[3]) return iso(+m[3], mon, +m[1]);
+    const limit = new Date(Date.now() + 864e5).toLocaleDateString('en-CA'); let y = new Date().getFullYear();
+    while (iso(y, mon, +m[1]) > limit) y--;
+    return iso(y, mon, +m[1]);
+  }
+  return null;
+}
+// Columns: LEDGER (party name padded to 30 characters, then area), GROUP, DEBIT (balance), CREDIT. Owner's rule: only rows with "due" in the CREDIT column count.
+function readDebtorsBook(wb) {
+  const days = [], skipped = [];
+  for (const name of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true });
+    const date = sheetDate(name);
+    const head = (rows[0] || []).map((h) => String(h || '').trim().toUpperCase());
+    const ci = (k, d) => { const i = head.indexOf(k); return i < 0 ? d : i; };
+    const L = ci('LEDGER', 0), G = ci('GROUP', 1), D = ci('DEBIT', 2), C = ci('CREDIT', 3);
+    if (!date) { skipped.push(name); continue; }
+    const out = [];
+    for (const r of rows.slice(1)) {
+      const led = String(r[L] || ''), amt = Number(r[D]);
+      if (!led.trim() || !Number.isFinite(amt) || !amt || !/due/i.test(String(r[C] || ''))) continue;
+      out.push({ party: (led.length > 30 ? led.slice(0, 30) : led).trim(), area: led.length > 30 ? led.slice(30).trim() : '', grp: String(r[G] || '').trim(), amount: amt, due: /due/i.test(String(r[C] || '')) });
+    }
+    const same = days.find((d) => d.date === date);
+    if (same) same.rows = out; else days.push({ date, rows: out });
+  }
+  return { days, skipped };
+}
+async function viewDebtors(m) {
+  const d = await api('GET', '/api/debtors?' + new URLSearchParams({ date: filters.debtDay || '' }));
+  const last = d.days[0];
+  const fmtDay = (x) => new Date(x + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+  const max = Math.max(1, ...d.days.map((x) => x.total));
+  const change = (now, before) => before == null ? '<span class="sub">new</span>' : now === before ? '—' : `<span class="${now > before ? 'up' : 'down'}">${now > before ? '▲' : '▼'} ${rupees(Math.abs(now - before))}</span>`;
+  const sumTop = d.top.reduce((n, r) => n + r.amount, 0), day = d.days.find((x) => x.date === d.date);
+  m.innerHTML = `<section class="card"><div class="row" style="flex-wrap:wrap;gap:10px"><div class="grow"><h2 style="margin:0">Source file</h2>
+      <p class="sub" style="margin:4px 0 0">${last ? `Last loaded: <b>${esc(last.file_name || 'file')}</b> · ${fmtFull(last.uploaded_at)}${last.uploaded_by_name ? ' by ' + esc(last.uploaded_by_name) : ''}` : 'No file loaded yet.'}
+      Pick your <b>Debtors.xls</b> (one sheet per day, e.g. "25 OCTOBER"). Only rows with <b>due</b> written in column D are counted. Load it again whenever you add a day; days already here are replaced.</p></div>
+      <label class="btn">Load Debtors file<input type="file" id="debtfile" accept=".xls,.xlsx,.xlsm,.csv" hidden></label></div></section>
+    ${d.days.length ? `<section class="card"><h2>Day-wise due debtors total · ${d.days.length} days</h2><div class="scroll"><table>
+      <tr><th>Date</th><th class="rs">Total debtors</th><th class="rs">Change</th><th class="rs">Due accounts</th><th style="width:30%"></th></tr>
+      ${d.days.map((x, i) => `<tr data-day="${x.date}" class="${x.date === d.date ? 'pick' : ''}"><td><b>${fmtDay(x.date)}</b></td><td class="rs"><b>${rupees(x.total)}</b></td>
+        <td class="rs">${d.days[i + 1] ? change(x.total, d.days[i + 1].total) : '—'}</td><td class="rs">${x.accounts}</td>
+        <td><div class="dbar" style="width:${(x.total / max * 100).toFixed(1)}%"></div></td></tr>`).join('')}
+      </table></div><p class="sub" style="margin:8px 0 0">Tap a day to see its top 100.</p></section>
+    <section class="card"><div class="row" style="flex-wrap:wrap"><h2 class="grow" style="margin:0">Top 100 due debtors · ${fmtDay(d.date)}</h2>
+      <select id="debtday">${d.days.map((x) => `<option value="${x.date}" ${x.date === d.date ? 'selected' : ''}>${fmtDay(x.date)}</option>`).join('')}</select></div>
+      <p class="sub">Top 100 total <b>${rupees(sumTop)}</b>${day ? ` · ${(sumTop / day.total * 100).toFixed(1)}% of ${rupees(day.total)}` : ''}${d.prev ? ` · change compared with ${fmtDay(d.prev)}` : ''}</p>
+      <input id="debtsearch" class="billsearch" placeholder="Search party, area or group" value="${esc(filters.debt || '')}" autocomplete="off">
+      <div class="scroll"><table><tr><th>#</th><th>Party</th><th>Area</th><th>Group</th><th class="rs">Amount</th><th class="rs">Change</th></tr>
+      ${d.top.map((r, i) => `<tr data-q="${esc((r.party + ' ' + r.area + ' ' + r.grp).toUpperCase())}"><td>${i + 1}</td><td><b>${esc(r.party)}</b></td><td>${esc(r.area)}</td>
+        <td><small>${esc(r.grp.replace(/^SUNDRY DEBTORS\s*/i, '') || '—')}</small></td><td class="rs"><b>${rupees(r.amount)}</b></td><td class="rs">${d.prev ? change(r.amount, r.prev_amount) : '—'}</td></tr>`).join('')}
+      </table></div></section>` : ''}`;
+  $('#debtfile').onchange = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    try {
+      toast('Reading ' + file.name + '…');
+      await loadXlsx();
+      const { days, skipped } = readDebtorsBook(XLSX.read(await file.arrayBuffer()));
+      if (!days.length) throw new Error('No day sheets found. Name each sheet by its date, like "25 OCTOBER".');
+      await api('POST', '/api/debtors/upload', { file_name: file.name, days });
+      filters.debtDay = '';
+      toast(`Loaded ${days.length} day${days.length > 1 ? 's' : ''}${skipped.length ? ` · skipped sheets: ${skipped.join(', ')}` : ''}`);
+      await loadTab();
+    } catch (err) { toast(err.message, true); }
+  };
+  if (!d.days.length) return;
+  $('#debtday').onchange = (e) => { filters.debtDay = e.target.value; loadTab(); };
+  m.querySelectorAll('tr[data-day]').forEach((tr) => { tr.onclick = () => { filters.debtDay = tr.dataset.day; loadTab(); }; });
+  const filter = () => { const q = $('#debtsearch').value.trim().toUpperCase(); filters.debt = q; m.querySelectorAll('tr[data-q]').forEach((tr) => { tr.hidden = q && !tr.dataset.q.includes(q); }); };
+  $('#debtsearch').oninput = filter; filter();
 }
 
 // ---------- Enter for staff: press work buttons for someone who forgot their phone ----------

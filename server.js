@@ -298,6 +298,15 @@ migrate('2026-10-30-faraz-prep-entry', () => {
 // Owner, 2026-10-30: IRFAN gets the same simple Preparing Entry as FARAZ.
 migrate('2026-10-30-irfan-prep-entry', () => { db.prepare("UPDATE users SET can_prep = 1 WHERE username = 'irfan'").run(); });
 
+// Debtors section (owners): one snapshot of the debtors list per day, uploaded from the owner's Debtors.xls (one sheet per day).
+migrate('2026-10-30-debtors', () => {
+  db.exec(`CREATE TABLE debtor_days (date TEXT PRIMARY KEY, total REAL NOT NULL, accounts INTEGER NOT NULL, due INTEGER NOT NULL DEFAULT 0,
+      file_name TEXT, uploaded_at TEXT NOT NULL, uploaded_by INTEGER REFERENCES users(id));
+    CREATE TABLE debtor_rows (date TEXT NOT NULL, party TEXT NOT NULL, area TEXT NOT NULL DEFAULT '', grp TEXT NOT NULL DEFAULT '',
+      amount REAL NOT NULL, due INTEGER NOT NULL DEFAULT 0);
+    CREATE INDEX debtor_rows_date ON debtor_rows(date, amount);`);
+});
+
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
 const stages = () => db.prepare('SELECT * FROM tasks WHERE stage_order IS NOT NULL ORDER BY stage_order').all();
@@ -317,10 +326,10 @@ function send(res, status, body, headers = {}) {
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const fail = (status, msg) => { throw new HttpError(status, msg); };
 
-function readBody(req) {
+function readBody(req, limit = 1e6) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', (c) => { data += c; if (data.length > 1e6) req.destroy(); });
+    req.on('data', (c) => { data += c; if (data.length > limit) req.destroy(); });
     req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch { reject(new HttpError(400, 'Bad JSON')); } });
     req.on('error', reject);
   });
@@ -508,6 +517,38 @@ const routes = {
     if (p !== null && !(Number.isInteger(p) && p >= 1 && p <= 20)) fail(400, 'Points must be 1 to 20');
     db.prepare('UPDATE entries SET points = ? WHERE id = ?').run(p, e.id);
     send(res, 200, { ok: true, points: p });
+  },
+  // Debtors: upload replaces every day found in the file; the rest of the history stays.
+  'POST /api/debtors/upload': async (req, res, u) => {
+    if (!u.is_admin) fail(403, 'Owner only');
+    const { file_name, days } = await readBody(req, 30e6);
+    if (!Array.isArray(days) || !days.length) fail(400, 'No days found in the file');
+    const t = now();
+    db.exec('BEGIN');
+    try {
+      for (const d of days) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d.date) || !Array.isArray(d.rows)) fail(400, 'Bad day in file');
+        const rows = d.rows.filter((r) => r && r.party && Number.isFinite(Number(r.amount)));
+        db.prepare('DELETE FROM debtor_rows WHERE date = ?').run(d.date);
+        const ins = db.prepare('INSERT INTO debtor_rows (date, party, area, grp, amount, due) VALUES (?, ?, ?, ?, ?, ?)');
+        for (const r of rows) ins.run(d.date, String(r.party).slice(0, 120), String(r.area || '').slice(0, 120), String(r.grp || '').slice(0, 120), Number(r.amount), r.due ? 1 : 0);
+        db.prepare('INSERT OR REPLACE INTO debtor_days (date, total, accounts, due, file_name, uploaded_at, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .run(d.date, rows.reduce((n, r) => n + Number(r.amount), 0), rows.length, rows.filter((r) => r.due).length, String(file_name || '').slice(0, 200), t, u.id);
+      }
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    send(res, 200, { ok: true, days: days.length });
+  },
+  // Day-wise totals, and the top 100 debtors of one day (newest by default) with the change since the day before.
+  'GET /api/debtors': async (req, res, u, q) => {
+    if (!u.is_admin) fail(403, 'Owner only');
+    const days = db.prepare('SELECT d.*, x.name AS uploaded_by_name FROM debtor_days d LEFT JOIN users x ON x.id = d.uploaded_by ORDER BY date DESC').all();
+    const date = days.some((d) => d.date === q.get('date')) ? q.get('date') : days[0] && days[0].date;
+    const prev = days.find((d) => d.date < date);
+    const top = date ? db.prepare(`SELECT r.party, r.area, r.grp, r.amount, r.due, p.amount AS prev_amount FROM debtor_rows r
+      LEFT JOIN (SELECT party, area, SUM(amount) AS amount FROM debtor_rows WHERE date = ? GROUP BY party, area) p ON p.party = r.party AND p.area = r.area
+      WHERE r.date = ? ORDER BY r.amount DESC LIMIT 100`).all(prev ? prev.date : '', date) : [];
+    send(res, 200, { days, date, prev: prev ? prev.date : null, top });
   },
   'POST /api/bills/edit': async (req, res, u) => {
     const body = await readBody(req);
@@ -848,7 +889,7 @@ const server = http.createServer(async (req, res) => {
       return await handler(req, res, u, url.searchParams);
     }
     if (url.pathname === '/sw.js') return send(res, 200, fs.readFileSync(path.join(__dirname, 'public', 'sw.js')), { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-cache' });
-    const types = { '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
+    const types = { '.js': 'text/javascript', '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
     const file = path.join(__dirname, 'public', path.normalize(url.pathname).replace(/^([/\\])+/, ''));
     const ext = path.extname(file);
     if (types[ext] && file.startsWith(path.join(__dirname, 'public')) && fs.existsSync(file)) {
