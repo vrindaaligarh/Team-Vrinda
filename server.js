@@ -4,6 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const tls = require('node:tls');
 const { DatabaseSync } = require('node:sqlite');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -307,7 +308,66 @@ migrate('2026-10-30-debtors', () => {
     CREATE INDEX debtor_rows_date ON debtor_rows(date, amount);`);
 });
 
+// Daily incentive email: which days were already mailed.
+migrate('2026-10-30-incentive-mail', () => { db.exec('CREATE TABLE incentive_mail (date TEXT PRIMARY KEY, sent_at TEXT NOT NULL, recipients TEXT)'); });
+
 // ---------- helpers ----------
+// Incentive per IST day between from and to (see GET /api/incentive for the rules).
+function incentiveDays(from, to) {
+  const [pr, ch] = [stages()[0].code, stages()[1].code];
+  const istDay = (iso) => new Date(Date.parse(iso) + 330 * 60000).toISOString().slice(0, 10);
+  const prep = db.prepare(`SELECT us.name, e.start_at, e.end_at, b.bill_no, b.items, c.points FROM entries e JOIN bills b ON b.id = e.bill_id JOIN users us ON us.id = e.start_by
+    LEFT JOIN entries c ON c.bill_id = e.bill_id AND c.task_code = ?
+    WHERE e.task_code = ? AND e.start_at IS NOT NULL AND e.end_at IS NOT NULL AND (e.note IS NULL OR e.note != 'All done') AND e.start_at >= ? AND e.start_at < ?
+    ORDER BY us.name, e.start_at`).all(ch, pr, from, to);
+  const checks = db.prepare(`SELECT su.name, pu.name AS partner, e.start_at, b.items FROM entries e JOIN bills b ON b.id = e.bill_id JOIN users su ON su.id = e.start_by
+    LEFT JOIN users pu ON pu.id = e.partner_by
+    WHERE e.task_code = ? AND e.start_at IS NOT NULL AND e.end_at IS NOT NULL AND (e.note IS NULL OR e.note != 'All done') AND e.start_at >= ? AND e.start_at < ?`).all(ch, from, to);
+  const days = {};
+  const day = (d) => (days[d] ||= { date: d, preppers: {}, checkers: {}, checked: 0 });
+  for (const r of prep) {
+    const p = (day(istDay(r.start_at)).preppers[r.name] ||= { name: r.name, items: 0, points: 0, bills: [], batches: [] });
+    p.items += r.items || 0; p.points += r.points || 0;
+    const bill = { bill_no: r.bill_no, items: r.items || 0, start_at: r.start_at, end_at: r.end_at };
+    p.bills.push(bill);
+    const last = p.batches[p.batches.length - 1];
+    if (last && r.start_at <= last.end_at) { last.bills.push(bill); last.items += bill.items; if (r.end_at > last.end_at) last.end_at = r.end_at; }
+    else p.batches.push({ start_at: r.start_at, end_at: r.end_at, items: bill.items, bills: [bill] });
+  }
+  for (const r of checks) {
+    const d = day(istDay(r.start_at)), items = r.items || 0;
+    d.checked += items;
+    for (const n of r.partner ? [r.name, r.partner] : [r.name]) {
+      const c = (d.checkers[n] ||= { name: n, items: 0, bills: 0 });
+      c.items += r.partner ? items / 2 : items; c.bills++;
+    }
+  }
+  const out = Object.values(days).sort((a, b) => b.date.localeCompare(a.date)).map((d) => {
+    const preppers = Object.values(d.preppers).map((p) => {
+      for (const b of p.batches) { const min = Math.max(1, (Date.parse(b.end_at) - Date.parse(b.start_at)) / 60000); for (const x of b.bills) x.speed = +(b.items / min).toFixed(2); }
+      const adjusted = p.items - 10 * p.points;
+      const dayReward = adjusted > 1100 ? 100 : adjusted > 700 ? 50 : 0;
+      const speedBills = p.bills.filter((b) => b.items >= 50).map((b) => ({ bill_no: b.bill_no, items: b.items, speed: b.speed, reward: b.speed > 4.5 ? 20 : b.speed > 3.25 ? 10 : 0 }));
+      const speedReward = speedBills.reduce((n, b) => n + b.reward, 0);
+      return { name: p.name, items: p.items, points: p.points, adjusted, bills: p.bills.length, dayReward, speedBills, speedReward, total: dayReward + speedReward };
+    }).sort((a, b) => b.total - a.total || b.adjusted - a.adjusted);
+    const checkers = Object.values(d.checkers).map((c) => {
+      const pct = d.checked ? (c.items / d.checked) * 100 : 0;
+      return { name: c.name, items: +c.items.toFixed(1), bills: c.bills, pct: +pct.toFixed(1), reward: pct > 45 ? 150 : pct > 30 ? 100 : 0 };
+    }).sort((a, b) => b.pct - a.pct);
+    return { date: d.date, checked: d.checked, preppers, checkers };
+  });
+  return out;
+}
+// Who earned money on one day: [{ name, items, speed, check, total }], biggest first.
+function incentiveEarners(d) {
+  const by = {};
+  for (const p of d ? d.preppers : []) if (p.total) Object.assign((by[p.name] ||= { name: p.name, items: 0, speed: 0, check: 0 }), { items: p.dayReward, speed: p.speedReward });
+  for (const c of d ? d.checkers : []) if (c.reward) (by[c.name] ||= { name: c.name, items: 0, speed: 0, check: 0 }).check = c.reward;
+  return Object.values(by).map((r) => ({ ...r, total: r.items + r.speed + r.check })).sort((a, b) => b.total - a.total);
+}
+
+
 const now = () => new Date().toISOString();
 const stages = () => db.prepare('SELECT * FROM tasks WHERE stage_order IS NOT NULL ORDER BY stage_order').all();
 const userTasks = (u) => u.tasks.split(',').map((s) => s.trim()).filter(Boolean);
@@ -638,51 +698,14 @@ const routes = {
   // Checkers: share of the day's checked items (split in half when two check together); over 30% = Rs 100, over 45% = Rs 150.
   'GET /api/incentive': async (req, res, u, q) => {
     if (!u.is_admin && !u.is_manager) fail(403, 'Not allowed');
-    const from = q.get('from') || new Date(Date.now() - 86400e3).toISOString(), to = q.get('to') || '9999';
-    const [pr, ch] = [stages()[0].code, stages()[1].code];
-    const istDay = (iso) => new Date(Date.parse(iso) + 330 * 60000).toISOString().slice(0, 10);
-    const prep = db.prepare(`SELECT us.name, e.start_at, e.end_at, b.bill_no, b.items, c.points FROM entries e JOIN bills b ON b.id = e.bill_id JOIN users us ON us.id = e.start_by
-      LEFT JOIN entries c ON c.bill_id = e.bill_id AND c.task_code = ?
-      WHERE e.task_code = ? AND e.start_at IS NOT NULL AND e.end_at IS NOT NULL AND (e.note IS NULL OR e.note != 'All done') AND e.start_at >= ? AND e.start_at < ?
-      ORDER BY us.name, e.start_at`).all(ch, pr, from, to);
-    const checks = db.prepare(`SELECT su.name, pu.name AS partner, e.start_at, b.items FROM entries e JOIN bills b ON b.id = e.bill_id JOIN users su ON su.id = e.start_by
-      LEFT JOIN users pu ON pu.id = e.partner_by
-      WHERE e.task_code = ? AND e.start_at IS NOT NULL AND e.end_at IS NOT NULL AND (e.note IS NULL OR e.note != 'All done') AND e.start_at >= ? AND e.start_at < ?`).all(ch, from, to);
-    const days = {};
-    const day = (d) => (days[d] ||= { date: d, preppers: {}, checkers: {}, checked: 0 });
-    for (const r of prep) {
-      const p = (day(istDay(r.start_at)).preppers[r.name] ||= { name: r.name, items: 0, points: 0, bills: [], batches: [] });
-      p.items += r.items || 0; p.points += r.points || 0;
-      const bill = { bill_no: r.bill_no, items: r.items || 0, start_at: r.start_at, end_at: r.end_at };
-      p.bills.push(bill);
-      const last = p.batches[p.batches.length - 1];
-      if (last && r.start_at <= last.end_at) { last.bills.push(bill); last.items += bill.items; if (r.end_at > last.end_at) last.end_at = r.end_at; }
-      else p.batches.push({ start_at: r.start_at, end_at: r.end_at, items: bill.items, bills: [bill] });
-    }
-    for (const r of checks) {
-      const d = day(istDay(r.start_at)), items = r.items || 0;
-      d.checked += items;
-      for (const n of r.partner ? [r.name, r.partner] : [r.name]) {
-        const c = (d.checkers[n] ||= { name: n, items: 0, bills: 0 });
-        c.items += r.partner ? items / 2 : items; c.bills++;
-      }
-    }
-    const out = Object.values(days).sort((a, b) => b.date.localeCompare(a.date)).map((d) => {
-      const preppers = Object.values(d.preppers).map((p) => {
-        for (const b of p.batches) { const min = Math.max(1, (Date.parse(b.end_at) - Date.parse(b.start_at)) / 60000); for (const x of b.bills) x.speed = +(b.items / min).toFixed(2); }
-        const adjusted = p.items - 10 * p.points;
-        const dayReward = adjusted > 1100 ? 100 : adjusted > 700 ? 50 : 0;
-        const speedBills = p.bills.filter((b) => b.items >= 50).map((b) => ({ bill_no: b.bill_no, items: b.items, speed: b.speed, reward: b.speed > 4.5 ? 20 : b.speed > 3.25 ? 10 : 0 }));
-        const speedReward = speedBills.reduce((n, b) => n + b.reward, 0);
-        return { name: p.name, items: p.items, points: p.points, adjusted, bills: p.bills.length, dayReward, speedBills, speedReward, total: dayReward + speedReward };
-      }).sort((a, b) => b.total - a.total || b.adjusted - a.adjusted);
-      const checkers = Object.values(d.checkers).map((c) => {
-        const pct = d.checked ? (c.items / d.checked) * 100 : 0;
-        return { name: c.name, items: +c.items.toFixed(1), bills: c.bills, pct: +pct.toFixed(1), reward: pct > 45 ? 150 : pct > 30 ? 100 : 0 };
-      }).sort((a, b) => b.pct - a.pct);
-      return { date: d.date, checked: d.checked, preppers, checkers };
-    });
-    send(res, 200, out);
+    send(res, 200, incentiveDays(q.get('from') || new Date(Date.now() - 86400e3).toISOString(), q.get('to') || '9999'));
+  },
+  // Owners: email one day's incentive sheet now (same as the 11 AM daily mail).
+  'POST /api/incentive/email': async (req, res, u) => {
+    if (!u.is_admin) fail(403, 'Owner only');
+    const { date } = await readBody(req);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) fail(400, 'Pick a day');
+    try { send(res, 200, await mailIncentive(date)); } catch (e) { fail(400, e.message); }
   },
   // Bill search for owners, MANSI and AFZAL: any open bill, at any step.
   'GET /api/find-bills': async (req, res, u, q) => {
@@ -956,4 +979,74 @@ const server = http.createServer(async (req, res) => {
     send(res, 500, { error: 'Server error' });
   }
 });
+// ---------- daily incentive email ----------
+// Settings come from the host's environment: SMTP_USER + SMTP_PASS (a Gmail app password), INCENTIVE_EMAIL_TO, INCENTIVE_EMAIL_CC
+// (comma separated), optional SMTP_HOST (default smtp.gmail.com, port 465). Every day at 11:00 IST the previous day's sheet is sent once.
+const MAIL = { host: process.env.SMTP_HOST || 'smtp.gmail.com', user: process.env.SMTP_USER, pass: process.env.SMTP_PASS,
+  to: (process.env.INCENTIVE_EMAIL_TO || '').split(',').map((x) => x.trim()).filter(Boolean), cc: (process.env.INCENTIVE_EMAIL_CC || '').split(',').map((x) => x.trim()).filter(Boolean) };
+
+// Minimal SMTP over TLS (port 465) with AUTH LOGIN; enough for Gmail.
+function smtpSend({ to, cc, subject, html }) {
+  return new Promise((resolve, reject) => {
+    const sock = tls.connect(465, MAIL.host, { servername: MAIL.host });
+    let buf = '', waiting = null;
+    const fail = (e) => { sock.destroy(); reject(e instanceof Error ? e : new Error(String(e))); };
+    sock.setTimeout(30000, () => fail('Email server timed out'));
+    sock.on('error', fail);
+    sock.on('data', (c) => {
+      buf += c;
+      const lines = buf.split('\r\n'); const done = lines.slice(0, -1).find((l) => /^\d{3} /.test(l));
+      if (done && waiting) { const w = waiting; waiting = null; const reply = buf; buf = ''; w(reply); }
+    });
+    const expect = (code) => new Promise((ok) => { waiting = (r) => (r.startsWith(String(code)) ? ok(r) : fail(`Email server said: ${r.trim().split('\r\n').pop()}`)); });
+    const cmd = (line, code) => { const p = expect(code); sock.write(line + '\r\n'); return p; };
+    const b64 = (x) => Buffer.from(x).toString('base64');
+    const msg = [`From: Vrinda Medical Agencies <${MAIL.user}>`, `To: ${to.join(', ')}`, ...(cc.length ? [`Cc: ${cc.join(', ')}`] : []),
+      `Subject: =?UTF-8?B?${b64(subject)}?=`, `Date: ${new Date().toUTCString()}`, `Message-ID: <${crypto.randomUUID()}@vrinda>`, 'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64(html).replace(/.{76}/g, '$&\r\n')].join('\r\n');
+    (async () => {
+      await expect(220);
+      await cmd('EHLO vrinda.local', 250);
+      await cmd('AUTH LOGIN', 334); await cmd(b64(MAIL.user), 334); await cmd(b64(MAIL.pass), 235);
+      await cmd(`MAIL FROM:<${MAIL.user}>`, 250);
+      for (const r of [...to, ...cc]) await cmd(`RCPT TO:<${r}>`, 250);
+      await cmd('DATA', 354); await cmd(msg + '\r\n.', 250);
+      sock.write('QUIT\r\n'); sock.end(); resolve();
+    })().catch(fail);
+  });
+}
+function incentiveSheetHtml(date) {
+  const from = new Date(date + 'T00:00:00+05:30').toISOString(), to = new Date(Date.parse(from) + 86400e3).toISOString();
+  const earners = incentiveEarners(incentiveDays(from, to)[0]);
+  const long = new Date(date + 'T00:00:00+05:30').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata' });
+  const rs = (n) => (n ? '&#8377;' + n : '—'), total = earners.reduce((n, r) => n + r.total, 0);
+  const td = 'style="border:1px solid #999;padding:6px 10px"', tdr = 'style="border:1px solid #999;padding:6px 10px;text-align:right"';
+  const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const html = `<div style="font:14px Arial,sans-serif;color:#111"><h2 style="margin:0">Vrinda Medical Agencies</h2><p style="margin:4px 0 14px">Daily incentive · <b>${long}</b></p>
+    ${earners.length ? `<table style="border-collapse:collapse"><tr style="background:#eee"><th ${td}>#</th><th ${td}>Employee</th><th ${tdr}>Items reward</th><th ${tdr}>Speed bonus</th><th ${tdr}>Checking reward</th><th ${tdr}>Total</th></tr>
+    ${earners.map((r, i) => `<tr><td ${td}>${i + 1}</td><td ${td}><b>${esc(r.name)}</b></td><td ${tdr}>${rs(r.items)}</td><td ${tdr}>${rs(r.speed)}</td><td ${tdr}>${rs(r.check)}</td><td ${tdr}><b>${rs(r.total)}</b></td></tr>`).join('')}
+    <tr style="font-weight:bold"><td ${td} colspan="5">Total · ${earners.length} employee${earners.length > 1 ? 's' : ''}</td><td ${tdr}>&#8377;${total}</td></tr></table>`
+      : '<p>Nobody earned an incentive on this day.</p>'}
+    <p style="color:#666;font-size:12px;margin-top:16px">Sent automatically by the Bill Tracker.</p></div>`;
+  return { html, subject: `Incentive ${long} · ₹${total}` };
+}
+async function mailIncentive(date) {
+  if (!MAIL.user || !MAIL.pass || !MAIL.to.length) throw new Error('Email is not set up yet (SMTP_USER, SMTP_PASS and INCENTIVE_EMAIL_TO on the server)');
+  const { html, subject } = incentiveSheetHtml(date);
+  await smtpSend({ to: MAIL.to, cc: MAIL.cc, subject, html });
+  db.prepare('INSERT OR REPLACE INTO incentive_mail (date, sent_at, recipients) VALUES (?, ?, ?)').run(date, now(), [...MAIL.to, ...MAIL.cc].join(', '));
+  return { ok: true, sent_to: [...MAIL.to, ...MAIL.cc] };
+}
+// Each minute: from 11:00 IST, send yesterday's sheet if it hasn't gone yet; after a failure wait 15 minutes before trying again.
+let mailRetryAt = 0;
+setInterval(() => {
+  if (!MAIL.user || !MAIL.pass || !MAIL.to.length || Date.now() < mailRetryAt) return;
+  const ist = new Date(Date.now() + 330 * 60000);
+  if (ist.getUTCHours() < 11) return;
+  const y = new Date(ist.getTime() - 86400e3).toISOString().slice(0, 10);
+  if (db.prepare('SELECT 1 FROM incentive_mail WHERE date = ?').get(y)) return;
+  mailRetryAt = Date.now() + 15 * 60000;
+  mailIncentive(y).then(() => console.log('Incentive email sent for', y)).catch((e) => console.error('Incentive email failed:', e.message));
+}, 60000).unref();
+
 server.listen(PORT, () => console.log(`Bill tracker running on http://localhost:${PORT}`));

@@ -949,7 +949,7 @@ async function viewIncentive(m) {
   const controls = `<section class="card"><div class="row" style="flex-wrap:wrap;gap:8px"><h2 class="grow" style="margin:0">Incentive</h2>
     <button class="btn small ${mode === 'day' ? '' : 'ghost'}" data-mode="day">Day</button><button class="btn small ${mode === 'month' ? '' : 'ghost'}" data-mode="month">Month</button><button class="btn small ${mode === 'range' ? '' : 'ghost'}" data-mode="range">From – to</button>
     ${mode === 'day' ? `<input type="date" id="incday" value="${dayStr}">` : mode === 'month' ? `<input type="month" id="incmon" value="${monStr}">`
-      : `<input type="date" id="incfrom" value="${fromStr}"> to <input type="date" id="incto" value="${toStr}" min="${fromStr}">`}<button class="btn green small" id="incprint">🖨 Print</button></div></section>`;
+      : `<input type="date" id="incfrom" value="${fromStr}"> to <input type="date" id="incto" value="${toStr}" min="${fromStr}">`}<button class="btn green small" id="incprint">🖨 Print</button>${mode === 'day' && state.me.is_admin ? '<button class="btn ghost small" id="incmail">✉ Email</button>' : ''}</div></section>`;
   let body, earners = [], title;
   if (mode === 'day') {
     const d = days[0] || { preppers: [], checkers: [], checked: 0 };
@@ -996,6 +996,7 @@ async function viewIncentive(m) {
   m.innerHTML = controls + body + rules;
   m.querySelectorAll('[data-mode]').forEach((b) => { b.onclick = () => { filters.incMode = b.dataset.mode; loadTab(); }; });
   $('#incprint').onclick = () => printIncentive(title, earners);
+  if ($('#incmail')) $('#incmail').onclick = (e) => { if (confirm(`Email the incentive sheet for ${dayStr} now?`)) act(e.target, async () => { const r = await api('POST', '/api/incentive/email', { date: dayStr }); toast('Emailed to ' + r.sent_to.join(', ')); }); };
   if ($('#incday')) $('#incday').onchange = (e) => { filters.incDay = e.target.value; loadTab(); };
   if ($('#incmon')) $('#incmon').onchange = (e) => { filters.incMonth = e.target.value; loadTab(); };
   if ($('#incfrom')) $('#incfrom').onchange = (e) => { filters.incFrom = e.target.value; loadTab(); };
