@@ -367,6 +367,23 @@ migrate('2026-10-30-attendance-half-ok', () => {
   db.exec(`CREATE TABLE attendance_half_ok (date TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, at TEXT NOT NULL, by INTEGER REFERENCES users(id), PRIMARY KEY (date, name));`);
 });
 
+// Shop Open/Close (owner, 2026-10-30; moved from the ChatGPT Speed Desk): two names open the shop and two close it each day.
+// data = { opening: { names: [a, b], at, by }, closing: {...} }. Days 1-11 Oct 2026 come from the owner's old "Opening Closing.xlsx".
+migrate('2026-10-30-shop-open-close', () => {
+  db.exec(`CREATE TABLE shop_open_close (date TEXT PRIMARY KEY, data TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL, updated_by INTEGER REFERENCES users(id));`);
+  const old = [['2026-10-01', 'SUFIYAN', 'AZEEM', 'HAYYUL', 'SONU'], ['2026-10-02', 'ANAS', 'SUFIYAN', 'JUNAID', 'SONU'], ['2026-10-03', 'SUFIYAN', 'AZEEM', 'HAYYUL', 'SONU'],
+    ['2026-10-04', 'YASH', 'AZEEM', '', ''], ['2026-10-05', 'HAMZA', 'YASH', '', ''], ['2026-10-07', 'ABHAY', 'ZUHAIB', 'SONU', 'MUKUL'], ['2026-10-08', 'SAFFAN', 'ABHAY', 'MUKUL', 'SONU'],
+    ['2026-10-09', 'ABHAY', 'HAMZA', 'FARHAN', 'SONU'], ['2026-10-10', 'HAMZA', 'SAFFAN', 'RIZWAN', 'SONU'], ['2026-10-11', 'SAFFAN', 'SAIF', '', '']];
+  const t = new Date().toISOString(), ins = db.prepare('INSERT INTO shop_open_close (date, data, revision, updated_at) VALUES (?, ?, 1, ?)');
+  for (const [d, o1, o2, c1, c2] of old) {
+    const data = { opening: { names: [o1, o2], at: null, by: 'Old Excel sheet' } };
+    if (c1) data.closing = { names: [c1, c2], at: null, by: 'Old Excel sheet' };
+    ins.run(d, JSON.stringify(data), t);
+  }
+});
+const SHOP_START = '2026-10-01';
+
 // ---------- attendance ----------
 // Same roster and PagarBook name matching as the Attendance tab (public/index.html, ATT_*). Rules start 20 Oct 2026.
 const ATT_START = '2026-10-20';
@@ -824,6 +841,36 @@ const routes = {
   'POST /api/attendance/late': async (req, res, u) => attDecision(req, res, u, 'attendance_late_ok'),
   // Same for a half day: 'approved' (not counted as a half day), 'rejected' (Not approved, counted), or none (undo).
   'POST /api/attendance/half': async (req, res, u) => attDecision(req, res, u, 'attendance_half_ok'),
+  // Shop Open/Close: owners see and correct any day from 1 Oct 2026; MANSI sees and saves today only.
+  'GET /api/shop-open': async (req, res, u, q) => {
+    if (!canAttendance(u)) fail(403, 'Shop Open/Close is only for the owner and Mansi');
+    const today = istToday(), month = q.get('month'), date = q.get('date') || today;
+    if (!u.is_admin && (month || date !== today)) fail(403, 'Mansi can see and enter today only');
+    if (month ? !/^\d{4}-\d{2}$/.test(month) : !/^\d{4}-\d{2}-\d{2}$/.test(date)) fail(400, 'Choose a valid date or month');
+    const rows = db.prepare(`SELECT s.date, s.data, s.revision, s.updated_at, x.name AS updated_by FROM shop_open_close s LEFT JOIN users x ON x.id = s.updated_by
+      WHERE ${month ? 's.date LIKE ?' : 's.date = ?'} ORDER BY s.date`).all(month ? month + '-%' : date).map((r) => ({ ...r, data: JSON.parse(r.data) }));
+    const names = db.prepare('SELECT name FROM users WHERE active = 1 AND is_admin = 0 ORDER BY name').all().map((x) => x.name.toUpperCase());
+    send(res, 200, { rows, names, today, start: SHOP_START }, { 'Cache-Control': 'no-store' });
+  },
+  // Save the opening or the closing pair for one day. revision must match the day as loaded (stops two people overwriting each other).
+  'POST /api/shop-open': async (req, res, u) => {
+    if (!canAttendance(u)) fail(403, 'Shop Open/Close is only for the owner and Mansi');
+    const { date, phase, names, revision } = await readBody(req, 4096), today = istToday();
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || new Date(date + 'T00:00:00Z').toISOString().slice(0, 10) !== date || date < SHOP_START || date > today)
+      fail(400, 'Choose a day from 1 October 2026 to today');
+    if (!u.is_admin && date !== today) fail(403, 'Mansi can enter today only');
+    if (!['opening', 'closing'].includes(phase)) fail(400, 'Choose opening or closing');
+    const list = (Array.isArray(names) ? names : []).map((n) => String(n || '').trim().replace(/\s+/g, ' ').toUpperCase());
+    if (list.length !== 2 || list.some((n) => !n || n.length > 60)) fail(400, 'Type both names');
+    if (list[0] === list[1]) fail(400, 'Choose two different people');
+    const old = db.prepare('SELECT * FROM shop_open_close WHERE date = ?').get(date);
+    if ((old ? old.revision : 0) !== Number(revision)) fail(409, 'Someone saved this day just now. Press Refresh and save again.');
+    const t = now(), data = old ? JSON.parse(old.data) : {};
+    data[phase] = { names: list, at: t, by: u.name };
+    if (old) db.prepare('UPDATE shop_open_close SET data = ?, revision = revision + 1, updated_at = ?, updated_by = ? WHERE date = ? AND revision = ?').run(JSON.stringify(data), t, u.id, date, old.revision);
+    else db.prepare('INSERT INTO shop_open_close (date, data, revision, updated_at, updated_by) VALUES (?, ?, 1, ?, ?)').run(date, JSON.stringify(data), t, u.id);
+    send(res, 200, { ok: true });
+  },
   'POST /api/bills/edit': async (req, res, u) => {
     const body = await readBody(req);
     const [bill] = billRows('WHERE b.id = ?', [body.bill_id]);

@@ -65,3 +65,7 @@ or a daily file with Staff Name in B1 and the date in C1). Shows present, on lea
 ₹300 no-late bonus per day and per month, with leave approval and a printable report. Rules are listed on the page
 (in-times, grace, half day, fines) and in `public/index.html` (ATT_SCHEDULE). Uploading the same file again keeps approvals;
 a day whose punches changed needs its leave approvals chosen again.
+
+Shop Open/Close (owners and MANSI): two people open and two close the shop each day. Each person on SHOP_LIST
+(public/index.html) must have at least 5 openings + closings a month, else ₹500 for that month. Owners see the month,
+print the report and correct any day from 1 Oct 2026; MANSI enters today only. 1-11 Oct 2026 came from the old Excel sheet.

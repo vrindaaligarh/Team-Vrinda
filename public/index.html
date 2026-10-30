@@ -245,11 +245,12 @@ function renderLogin() {
 
 // ---------- shell ----------
 // Top-level sections of the Vrinda Medical Agencies dashboard; Bill Tracker holds every tab below. More sections come later.
-const SECTIONS_ALL = [['bills', 'Bill Tracker'], ['debtors', 'Debtors', (me) => me.is_admin], ['attendance', 'Attendance', (me) => me.is_admin || me.username === 'mansi']];
+const SECTIONS_ALL = [['bills', 'Bill Tracker'], ['debtors', 'Debtors', (me) => me.is_admin], ['attendance', 'Attendance', (me) => me.is_admin || me.username === 'mansi'], ['shop', 'Shop Open/Close', (me) => me.is_admin || me.username === 'mansi']];
 const sections = () => SECTIONS_ALL.filter(([, , ok]) => !ok || ok(state.me));
 function tabs() {
   if (state.section === 'debtors') return [['debtors', 'Debtors']];
   if (state.section === 'attendance') return [['attendance', 'Attendance']];
+  if (state.section === 'shop') return [['shop', 'Shop Open/Close']];
   // Owners don't log their own jobs, so they don't get My Jobs.
   const t = state.me.is_admin ? [['other', 'Work']] : [['other', 'Work'], ['mine', 'My Jobs']];
   if (state.me.can_proxy) t.splice(1, 0, ['prep', 'Preparing Entry'], ['proxy', 'Enter for Staff']);
@@ -293,7 +294,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, debtors: viewDebtors, attendance: viewAttendance, incentive: viewIncentive, report: viewReport, items: viewItems, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, debtors: viewDebtors, attendance: viewAttendance, shop: viewShop, incentive: viewIncentive, report: viewReport, items: viewItems, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -1579,6 +1580,104 @@ async function viewAttendance(m) {
     } catch (err) { toast(err.message, true); }
     finally { attBusy = false; loadTab(); }
   };
+}
+
+// ---------- Shop Open/Close (owners and MANSI) ----------
+// Each day two people open the shop and two close it. Rule (owner): each person on SHOP_LIST must appear at least 5 times
+// a month (openings + closings together); anyone below 5 has a ₹500 penalty for that month (at current counts until month end).
+// Owners see and correct any day from 1 Oct 2026; MANSI enters today only. Days 1-11 Oct came from the old Excel sheet.
+const SHOP_LIST = ['FARHAN', 'HAYYUL', 'MUKUL', 'SONU', 'ARUN', 'AFZAL', 'RIZWAN', 'YASH', 'ANAS', 'AZEEM', 'ABHAY', 'FARAZ', 'HAMZA', 'JUNAID', 'REHAN', 'SAFFAN', 'SAIF', 'SUFIYAN', 'ZUHAIB', 'VICKY'];
+const SHOP_MIN = 5, SHOP_FINE = 500;
+function shopCounts(rows) {
+  const per = new Map(SHOP_LIST.map((n) => [n, { name: n, opened: 0, closed: 0, listed: true }]));
+  for (const r of rows) for (const [ph, key] of [['opening', 'opened'], ['closing', 'closed']]) for (const n of ((r.data[ph] || {}).names || [])) {
+    const k = attNorm(n); if (!k) continue;
+    if (!per.has(k)) per.set(k, { name: k, opened: 0, closed: 0, listed: false });
+    per.get(k)[key]++;
+  }
+  return [...per.values()].map((p) => { const total = p.opened + p.closed; return { ...p, total, needed: p.listed ? Math.max(0, SHOP_MIN - total) : null, fine: p.listed ? (total < SHOP_MIN ? SHOP_FINE : 0) : null }; })
+    .sort((a, b) => (b.listed - a.listed) || a.total - b.total || a.name.localeCompare(b.name));
+}
+function shopSummaryHtml(rows, month, monthOver) {
+  const list = shopCounts(rows), below = list.filter((p) => p.listed && p.total < SHOP_MIN), fines = below.length * SHOP_FINE;
+  const opened = list.reduce((n, p) => n + p.opened, 0), closed = list.reduce((n, p) => n + p.closed, 0);
+  const stat = (n, l) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`;
+  return `<div class="stats">${stat(opened + closed, `Entries this month (${opened} opening + ${closed} closing)`)}${stat(below.length + ' / ' + SHOP_LIST.length, 'People below 5 entries')}${stat(rupees(fines), monthOver ? 'Penalty for the month' : 'Penalty at current counts')}</div>
+    <section class="card"><h2>${esc(attFmt(month + '-01', { month: 'long', year: 'numeric' }))} · participation &amp; penalties</h2>
+    <p class="sub">Each person must open or close the shop at least <b>5 times</b> a month (openings and closings added together). Below 5 = <b>₹500</b> once for the month.${monthOver ? '' : ' Amounts change as entries are added until the month ends.'}</p>
+    ${attTable(['Employee', '#Opened', '#Closed', '#Total', '#Still needed', '#Penalty'], list.map((p) => `<tr><td><b>${esc(attTitle(p.name))}</b>${p.listed ? '' : ' <span class="pill gray">Not on the list</span>'}</td>
+      <td class="rs">${p.opened}</td><td class="rs">${p.closed}</td><td class="rs"><b>${p.total}</b></td><td class="rs">${p.needed == null ? '—' : p.needed || '✓'}</td>
+      <td class="rs">${p.fine == null ? '—' : p.fine ? `<b class="neg">${rupees(p.fine)}</b>` : '<span class="pos">₹0</span>'}</td></tr>`), 'Nobody yet.')}</section>`;
+}
+function shopPrint(rows, month, monthOver) {
+  const list = shopCounts(rows), below = list.filter((p) => p.listed && p.total < SHOP_MIN), total = list.reduce((n, p) => n + p.total, 0);
+  const label = attFmt(month + '-01', { month: 'long', year: 'numeric' });
+  const old = document.getElementById('shopPrint'); if (old) old.remove();
+  const f = document.createElement('iframe'); f.id = 'shopPrint'; f.style.cssText = 'position:fixed;left:-10000px;top:0;width:800px;height:1100px;border:0'; document.body.appendChild(f);
+  f.onload = () => { const w = f.contentWindow; w.addEventListener('afterprint', () => f.remove(), { once: true }); w.focus(); w.print(); };
+  f.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><title>Shop opening &amp; closing ${esc(label)}</title><style>@page{size:A4 portrait;margin:12mm}body{font:12px Arial,sans-serif;color:#111}h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;margin:0 0 8px}table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #999;padding:6px;text-align:left}td.r,th.r{text-align:right}tr{break-inside:avoid}</style></head><body>
+    <h1>Vrinda Medical Agencies</h1><h2>Shop opening &amp; closing · ${esc(label)}</h2>
+    <p>Rule: each person must open or close the shop at least 5 times a month. Below 5 = ₹500.<br>Printed ${esc(new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }))}${monthOver ? '' : ' · month not over yet, counts can still change'}<br>
+    Total entries ${total} · People below 5: ${below.length} · Total penalty <b>${rupees(below.length * SHOP_FINE)}</b></p>
+    <table><tr><th>Employee</th><th class="r">Opened</th><th class="r">Closed</th><th class="r">Total</th><th class="r">Still needed</th><th>Status</th><th class="r">Penalty</th></tr>
+    ${list.map((p) => `<tr><td>${esc(attTitle(p.name))}</td><td class="r">${p.opened}</td><td class="r">${p.closed}</td><td class="r"><b>${p.total}</b></td><td class="r">${p.needed == null ? '—' : p.needed}</td>
+      <td>${!p.listed ? 'Not on the list' : p.total < SHOP_MIN ? 'Below minimum' : 'Minimum met'}</td><td class="r">${p.fine == null ? '—' : rupees(p.fine)}</td></tr>`).join('')}</table></body></html>`;
+}
+// Entry card for one day: Opened by 1/2 + Save opening, Closed by 1/2 + Save closing.
+function shopEntryHtml(date, row, names, locked) {
+  const d = (row && row.data) || {}, rev = row ? row.revision : 0;
+  const phase = (ph, title, btn) => { const p = d[ph] || {}, n = p.names || ['', ''];
+    return `<form class="card" data-shop-phase="${ph}" data-rev="${rev}" style="margin:0"><h2>${title}</h2>
+      <div class="row" style="margin:8px 0"><input name="n1" class="grow" list="shopnames" placeholder="${title.replace('Shop ', '').replace(' by', '')} by 1" value="${esc(n[0])}" autocapitalize="characters" autocomplete="off" style="text-transform:uppercase">
+      <input name="n2" class="grow" list="shopnames" placeholder="${title.replace('Shop ', '').replace(' by', '')} by 2" value="${esc(n[1])}" autocapitalize="characters" autocomplete="off" style="text-transform:uppercase"></div>
+      <div class="row"><button class="btn ${ph === 'opening' ? 'green' : ''}">${btn}</button>
+      <span class="sub" style="margin:0">${p.names ? `Saved by ${esc(p.by || '')}${p.at ? ' · ' + fmtFull(p.at) : ''}` : 'Not saved yet'}</span></div></form>`; };
+  return `<section class="card"><h2>${locked ? 'Today · ' : ''}${esc(attFmt(date))}</h2><p class="sub">Two different people for opening and two for closing. Pick from the list or type a name.</p>
+    <datalist id="shopnames">${names.map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">${phase('opening', 'Shop opened by', 'Save opening')}${phase('closing', 'Shop closed by', 'Save closing')}</div></section>`;
+}
+async function viewShop(m) {
+  const owner = state.me.is_admin;
+  let saveDate;
+  if (!owner) {
+    const d = await api('GET', '/api/shop-open');
+    saveDate = d.today;
+    m.innerHTML = shopEntryHtml(d.today, d.rows[0], d.names, true) + `<p class="sub">You can enter today's opening and closing. Ask the owner to correct an earlier day.</p>`;
+  } else {
+    if (!filters.shopDate) filters.shopDate = attNow().date;
+    const date = saveDate = filters.shopDate, month = date.slice(0, 7), monthly = filters.shopMode === 'monthly';
+    const d = await api('GET', '/api/shop-open?month=' + month), today = d.today;
+    const monthOver = month < today.slice(0, 7), row = d.rows.find((r) => r.date === date);
+    m.innerHTML = `<section class="card"><div class="att-bar">
+        <div class="seg"><button data-shop-mode="daily" class="${monthly ? '' : 'on'}">Daily</button><button data-shop-mode="monthly" class="${monthly ? 'on' : ''}">Monthly</button></div>
+        ${monthly ? `<button class="btn ghost small" data-shop-step="-1">◀</button><input type="month" id="shopmonth" min="${d.start.slice(0, 7)}" max="${today.slice(0, 7)}" value="${month}"><button class="btn ghost small" data-shop-step="1">▶</button>`
+          : `<button class="btn ghost small" data-shop-step="-1">◀</button><input type="date" id="shopdate" min="${d.start}" max="${today}" value="${date}"><button class="btn ghost small" data-shop-step="1">▶</button><button class="btn ghost small" id="shoptoday">Today</button>`}
+        <span class="grow"></span><button class="btn ghost small" id="shoprefresh">↻ Refresh</button><button class="btn ghost small" id="shopprint">🖨 Print report</button></div></section>
+      ${monthly ? '' : shopEntryHtml(date, row, d.names, false)}
+      ${shopSummaryHtml(d.rows, month, monthOver)}
+      ${monthly ? `<section class="card"><h2>Day by day</h2><p class="sub">Tap a day to see or correct it.</p>${attTable(['Date', 'Opened by', 'Closed by', 'Saved by'], d.rows.slice().reverse().map((r) => {
+        const o = r.data.opening, c = r.data.closing, by = [o && o.by, c && c.by].filter((x, i, a) => x && a.indexOf(x) === i).join(', ');
+        return `<tr class="click" data-shop-day="${r.date}"><td><b>${esc(attFmt(r.date, { weekday: 'short', day: 'numeric', month: 'short' }))}</b></td><td>${o ? esc(o.names.map(attTitle).join(', ')) : '<span class="sub">—</span>'}</td>
+          <td>${c ? esc(c.names.map(attTitle).join(', ')) : '<span class="sub">—</span>'}</td><td><small>${esc(by)}</small></td></tr>`; }), 'No days saved in this month.')}</section>` : ''}`;
+    const go = (x) => { filters.shopDate = x; loadTab(); };
+    m.querySelectorAll('[data-shop-mode]').forEach((b) => b.onclick = () => { filters.shopMode = b.dataset.shopMode; loadTab(); });
+    m.querySelectorAll('[data-shop-step]').forEach((b) => b.onclick = () => {
+      const n = +b.dataset.shopStep;
+      if (monthly) { const [y, mo] = month.split('-').map(Number), x = new Date(Date.UTC(y, mo - 1 + n, 1)).toISOString().slice(0, 7); if (x >= d.start.slice(0, 7) && x <= today.slice(0, 7)) go(x === today.slice(0, 7) ? today : x + '-01'); }
+      else { const x = attShiftDay(date, n); if (x >= d.start && x <= today) go(x); }
+    });
+    m.querySelectorAll('[data-shop-day]').forEach((tr) => tr.onclick = () => { filters.shopMode = 'daily'; go(tr.dataset.shopDay); });
+    if ($('#shopdate')) $('#shopdate').onchange = (e) => e.target.value && go(e.target.value);
+    if ($('#shopmonth')) $('#shopmonth').onchange = (e) => e.target.value && go(e.target.value === today.slice(0, 7) ? today : e.target.value + '-01');
+    if ($('#shoptoday')) $('#shoptoday').onclick = () => go(today);
+    $('#shoprefresh').onclick = () => loadTab().then(() => toast('Refreshed'));
+    $('#shopprint').onclick = () => shopPrint(d.rows, month, monthOver);
+  }
+  m.querySelectorAll('form[data-shop-phase]').forEach((f) => f.onsubmit = (e) => {
+    e.preventDefault();
+    act(f.querySelector('button'), () => api('POST', '/api/shop-open', { date: saveDate, phase: f.dataset.shopPhase, names: [f.n1.value, f.n2.value], revision: +f.dataset.rev }),
+      f.dataset.shopPhase === 'opening' ? 'Opening saved' : 'Closing saved');
+  });
 }
 
 async function boot() {
