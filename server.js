@@ -632,6 +632,58 @@ const routes = {
     }).sort((a, b) => b.per_min - a.per_min);
     send(res, 200, out);
   },
+  // Daily incentive (owner's VMA Incentive Rules, 2026-10-30), worked out per IST day between from and to.
+  // Preppers: Preparing items that day minus 10 per checking point on their bills; over 700 = Rs 50, over 1100 = Rs 100.
+  //   Speed bonus per bill of 50+ items: over 3.25 items/min = Rs 10, over 4.5 = Rs 20 (bills prepared together share the batch speed).
+  // Checkers: share of the day's checked items (split in half when two check together); over 30% = Rs 100, over 45% = Rs 150.
+  'GET /api/incentive': async (req, res, u, q) => {
+    if (!u.is_admin && !u.is_manager) fail(403, 'Not allowed');
+    const from = q.get('from') || new Date(Date.now() - 86400e3).toISOString(), to = q.get('to') || '9999';
+    const [pr, ch] = [stages()[0].code, stages()[1].code];
+    const istDay = (iso) => new Date(Date.parse(iso) + 330 * 60000).toISOString().slice(0, 10);
+    const prep = db.prepare(`SELECT us.name, e.start_at, e.end_at, b.bill_no, b.items, c.points FROM entries e JOIN bills b ON b.id = e.bill_id JOIN users us ON us.id = e.start_by
+      LEFT JOIN entries c ON c.bill_id = e.bill_id AND c.task_code = ?
+      WHERE e.task_code = ? AND e.start_at IS NOT NULL AND e.end_at IS NOT NULL AND (e.note IS NULL OR e.note != 'All done') AND e.start_at >= ? AND e.start_at < ?
+      ORDER BY us.name, e.start_at`).all(ch, pr, from, to);
+    const checks = db.prepare(`SELECT su.name, pu.name AS partner, e.start_at, b.items FROM entries e JOIN bills b ON b.id = e.bill_id JOIN users su ON su.id = e.start_by
+      LEFT JOIN users pu ON pu.id = e.partner_by
+      WHERE e.task_code = ? AND e.start_at IS NOT NULL AND e.end_at IS NOT NULL AND (e.note IS NULL OR e.note != 'All done') AND e.start_at >= ? AND e.start_at < ?`).all(ch, from, to);
+    const days = {};
+    const day = (d) => (days[d] ||= { date: d, preppers: {}, checkers: {}, checked: 0 });
+    for (const r of prep) {
+      const p = (day(istDay(r.start_at)).preppers[r.name] ||= { name: r.name, items: 0, points: 0, bills: [], batches: [] });
+      p.items += r.items || 0; p.points += r.points || 0;
+      const bill = { bill_no: r.bill_no, items: r.items || 0, start_at: r.start_at, end_at: r.end_at };
+      p.bills.push(bill);
+      const last = p.batches[p.batches.length - 1];
+      if (last && r.start_at <= last.end_at) { last.bills.push(bill); last.items += bill.items; if (r.end_at > last.end_at) last.end_at = r.end_at; }
+      else p.batches.push({ start_at: r.start_at, end_at: r.end_at, items: bill.items, bills: [bill] });
+    }
+    for (const r of checks) {
+      const d = day(istDay(r.start_at)), items = r.items || 0;
+      d.checked += items;
+      for (const n of r.partner ? [r.name, r.partner] : [r.name]) {
+        const c = (d.checkers[n] ||= { name: n, items: 0, bills: 0 });
+        c.items += r.partner ? items / 2 : items; c.bills++;
+      }
+    }
+    const out = Object.values(days).sort((a, b) => b.date.localeCompare(a.date)).map((d) => {
+      const preppers = Object.values(d.preppers).map((p) => {
+        for (const b of p.batches) { const min = Math.max(1, (Date.parse(b.end_at) - Date.parse(b.start_at)) / 60000); for (const x of b.bills) x.speed = +(b.items / min).toFixed(2); }
+        const adjusted = p.items - 10 * p.points;
+        const dayReward = adjusted > 1100 ? 100 : adjusted > 700 ? 50 : 0;
+        const speedBills = p.bills.filter((b) => b.items >= 50).map((b) => ({ bill_no: b.bill_no, items: b.items, speed: b.speed, reward: b.speed > 4.5 ? 20 : b.speed > 3.25 ? 10 : 0 }));
+        const speedReward = speedBills.reduce((n, b) => n + b.reward, 0);
+        return { name: p.name, items: p.items, points: p.points, adjusted, bills: p.bills.length, dayReward, speedBills, speedReward, total: dayReward + speedReward };
+      }).sort((a, b) => b.total - a.total || b.adjusted - a.adjusted);
+      const checkers = Object.values(d.checkers).map((c) => {
+        const pct = d.checked ? (c.items / d.checked) * 100 : 0;
+        return { name: c.name, items: +c.items.toFixed(1), bills: c.bills, pct: +pct.toFixed(1), reward: pct > 45 ? 150 : pct > 30 ? 100 : 0 };
+      }).sort((a, b) => b.pct - a.pct);
+      return { date: d.date, checked: d.checked, preppers, checkers };
+    });
+    send(res, 200, out);
+  },
   // Bill search for owners, MANSI and AFZAL: any open bill, at any step.
   'GET /api/find-bills': async (req, res, u, q) => {
     if (!u.can_proxy && !u.can_alldone && !u.is_manager) fail(403, 'Not allowed');

@@ -237,7 +237,7 @@ function tabs() {
   if (state.me.verify_codes.length && !state.me.is_admin && !state.me.is_manager) t.push(['verify', 'Verify Jobs']);
   if (state.me.is_admin || state.me.tasks.includes('FR')) t.push(['final', 'Final Verification']);
   if (state.me.can_proxy && !state.me.is_admin && !state.me.is_manager) t.push(['all', 'All Bills']);
-  if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['status', 'Staff Status'], ['fixes', 'Fix Requests']);
+  if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['status', 'Staff Status'], ['incentive', 'Incentive'], ['fixes', 'Fix Requests']);
   if (state.me.is_admin) t.push(['staff', 'Staff'], ['codes', 'Task Codes']);
   return t;
 }
@@ -272,7 +272,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, debtors: viewDebtors, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, debtors: viewDebtors, incentive: viewIncentive, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -914,6 +914,63 @@ async function viewDebtors(m) {
   m.querySelectorAll('tr[data-day]').forEach((tr) => { tr.onclick = () => { filters.debtDay = tr.dataset.day; loadTab(); }; });
   const filter = () => { const q = $('#debtsearch').value.trim().toUpperCase(); filters.debt = q; m.querySelectorAll('tr[data-q]').forEach((tr) => { tr.hidden = q && !tr.dataset.q.includes(q); }); };
   $('#debtsearch').oninput = filter; filter();
+}
+
+// ---------- Incentive (owners, manager): daily rewards from the VMA Incentive Rules ----------
+async function viewIncentive(m) {
+  const today = new Date().toLocaleDateString('en-CA');
+  const mode = filters.incMode || 'day', dayStr = filters.incDay || today, monStr = filters.incMonth || today.slice(0, 7);
+  let range;
+  if (mode === 'day') range = dayRange(dayStr);
+  else { const f = new Date(monStr + '-01T00:00:00'), t = new Date(f); t.setMonth(t.getMonth() + 1); range = { from: f.toISOString(), to: t.toISOString() }; }
+  const days = await api('GET', '/api/incentive?' + new URLSearchParams(range));
+  const rs = (n) => n ? `<b>₹${n}</b>` : '<span class="sub">—</span>';
+  const stat = (n, label) => `<div class="stat"><b>${n}</b><span>${label}</span></div>`;
+  const fmtDay = (x) => new Date(x + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+  const controls = `<section class="card"><div class="row" style="flex-wrap:wrap;gap:8px"><h2 class="grow" style="margin:0">Incentive</h2>
+    <button class="btn small ${mode === 'day' ? '' : 'ghost'}" data-mode="day">Day</button><button class="btn small ${mode === 'month' ? '' : 'ghost'}" data-mode="month">Month</button>
+    ${mode === 'day' ? `<input type="date" id="incday" value="${dayStr}">` : `<input type="month" id="incmon" value="${monStr}">`}</div></section>`;
+  let body;
+  if (mode === 'day') {
+    const d = days[0] || { preppers: [], checkers: [], checked: 0 };
+    const total = d.preppers.reduce((n, p) => n + p.total, 0) + d.checkers.reduce((n, c) => n + c.reward, 0);
+    body = `<div class="stats" style="margin-bottom:12px">${stat('₹' + total, 'Total incentive')}${stat(d.preppers.filter((p) => p.total).length + d.checkers.filter((c) => c.reward).length, 'Rewards earned')}${stat(d.preppers.reduce((n, p) => n + p.items, 0), 'Items prepared')}${stat(d.checked, 'Items checked')}</div>
+      <section class="card"><h2>Preppers</h2>${d.preppers.length ? `<div class="scroll"><table><tr><th>Employee</th><th class="rs">Bills</th><th class="rs">Items</th><th class="rs">Points</th><th class="rs">Counted items</th><th class="rs">Items reward</th><th>Speed bonus (50+ item bills)</th><th class="rs">Total</th></tr>
+      ${d.preppers.map((p) => `<tr><td><b>${esc(p.name)}</b></td><td class="rs">${p.bills}</td><td class="rs">${p.items}</td><td class="rs">${p.points ? `<span class="late">${p.points}</span>` : '0'}</td>
+        <td class="rs"><b>${p.adjusted}</b>${p.points ? ` <small class="sub">(−${p.points * 10})</small>` : ''}</td><td class="rs">${rs(p.dayReward)}</td>
+        <td style="white-space:normal;min-width:220px">${(() => { const won = p.speedBills.filter((b) => b.reward);
+          if (!p.speedBills.length) return '<small class="sub">No 50+ item bills</small>';
+          return `<b>${rs(p.speedReward)}</b> <small class="sub">${won.length} of ${p.speedBills.length} bills</small>${won.length ? `<br><small>${won.map((b) => `${esc(b.bill_no)} ${b.speed}/min ₹${b.reward}`).join(' · ')}</small>` : ''}`; })()}</td>
+        <td class="rs">${rs(p.total)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No finished Preparing bills on this day.</p>'}</section>
+      <section class="card"><h2>Checkers · ${d.checked} items checked</h2>${d.checkers.length ? `<div class="scroll"><table><tr><th>Employee</th><th class="rs">Bills</th><th class="rs">Items checked</th><th class="rs">Share of work</th><th class="rs">Reward</th></tr>
+      ${d.checkers.map((c) => `<tr><td><b>${esc(c.name)}</b></td><td class="rs">${c.bills}</td><td class="rs">${c.items}</td><td class="rs"><b>${c.pct}%</b></td><td class="rs">${rs(c.reward)}</td></tr>`).join('')}</table></div>
+      <p class="sub" style="margin:8px 0 0">When two people check a bill together, each gets half its items.</p>` : '<p class="empty">No finished Checking on this day.</p>'}</section>`;
+  } else {
+    const people = {};
+    const get = (n) => (people[n] ||= { name: n, items: 0, speed: 0, check: 0, days: new Set() });
+    for (const d of days) {
+      for (const p of d.preppers) { const r = get(p.name); r.items += p.dayReward; r.speed += p.speedReward; if (p.total) r.days.add(d.date); }
+      for (const c of d.checkers) { const r = get(c.name); r.check += c.reward; if (c.reward) r.days.add(d.date); }
+    }
+    const list = Object.values(people).map((r) => ({ ...r, total: r.items + r.speed + r.check })).filter((r) => r.total).sort((a, b) => b.total - a.total);
+    const sum = list.reduce((n, r) => n + r.total, 0);
+    body = `<div class="stats" style="margin-bottom:12px">${stat('₹' + sum, 'Total incentive')}${stat(list.length, 'Employees earning')}${stat(days.length, 'Working days')}</div>
+      <section class="card"><h2>Month total by employee</h2>${list.length ? `<div class="scroll"><table><tr><th>Employee</th><th class="rs">Items reward</th><th class="rs">Speed bonus</th><th class="rs">Checking reward</th><th class="rs">Days earned</th><th class="rs">Total</th></tr>
+      ${list.map((r) => `<tr><td><b>${esc(r.name)}</b></td><td class="rs">${rs(r.items)}</td><td class="rs">${rs(r.speed)}</td><td class="rs">${rs(r.check)}</td><td class="rs">${r.days.size}</td><td class="rs">${rs(r.total)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No incentive earned this month yet.</p>'}</section>
+      <section class="card"><h2>Day by day</h2><div class="scroll"><table><tr><th>Date</th><th class="rs">Items prepared</th><th class="rs">Items checked</th><th class="rs">Incentive</th></tr>
+      ${days.map((d) => `<tr data-incday="${d.date}" style="cursor:pointer"><td><b>${fmtDay(d.date)}</b></td><td class="rs">${d.preppers.reduce((n, p) => n + p.items, 0)}</td><td class="rs">${d.checked}</td>
+        <td class="rs">${rs(d.preppers.reduce((n, p) => n + p.total, 0) + d.checkers.reduce((n, c) => n + c.reward, 0))}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No days yet.</td></tr>'}</table></div><p class="sub" style="margin:8px 0 0">Tap a day to open it.</p></section>`;
+  }
+  const rules = `<section class="card"><h2>Rules</h2><p class="sub" style="margin:0">
+    <b>Preppers:</b> more than 700 items in a day ₹50, more than 1100 ₹100 (the higher one replaces the lower). Each checking point cuts 10 items (720 items with 2 points counts as 700, so no reward).
+    Speed above 3.25 items/min ₹10 per bill, above 4.5 ₹20 per bill, only on bills of 50 or more items; bills prepared at the same time share their batch speed.<br>
+    <b>Checkers:</b> more than 30% of the day's checked items ₹100, more than 45% ₹150 (the higher one replaces the lower).<br>
+    Days run midnight to midnight by the Preparing or Checking start time. "All done" steps are not counted.</p></section>`;
+  m.innerHTML = controls + body + rules;
+  m.querySelectorAll('[data-mode]').forEach((b) => { b.onclick = () => { filters.incMode = b.dataset.mode; loadTab(); }; });
+  if ($('#incday')) $('#incday').onchange = (e) => { filters.incDay = e.target.value; loadTab(); };
+  if ($('#incmon')) $('#incmon').onchange = (e) => { filters.incMonth = e.target.value; loadTab(); };
+  m.querySelectorAll('[data-incday]').forEach((tr) => { tr.onclick = () => { filters.incMode = 'day'; filters.incDay = tr.dataset.incday; loadTab(); }; });
 }
 
 // ---------- Enter for staff: press work buttons for someone who forgot their phone ----------
