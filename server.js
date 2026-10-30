@@ -323,7 +323,23 @@ migrate('2026-10-30-departments', () => {
 
 migrate('2026-10-30-rayyan-operations', () => { db.prepare("UPDATE users SET dept = 'Operations' WHERE username = 'rayyan'").run(); });
 
+// Syrup cases (O): the person types each case name and the rack it went on (owner, 2026-10-30).
+migrate('2026-10-30-syrup-cases', () => {
+  db.exec(`CREATE TABLE syrup_cases (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+    case_name TEXT NOT NULL, rack_no TEXT NOT NULL, at TEXT NOT NULL, by INTEGER REFERENCES users(id));
+    CREATE INDEX syrup_cases_entry ON syrup_cases(entry_id);`);
+});
+
 // ---------- helpers ----------
+// Adds .cases (syrup case name + rack) to work rows of the Syrup cases task.
+function withCases(rows) {
+  const ids = rows.filter((r) => r.task_code === 'O').map((r) => r.id);
+  if (!ids.length) return rows;
+  const by = {};
+  for (const c of db.prepare(`SELECT id, entry_id, case_name, rack_no, at FROM syrup_cases WHERE entry_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`).all(...ids)) (by[c.entry_id] ||= []).push(c);
+  for (const r of rows) if (r.task_code === 'O') r.cases = by[r.id] || [];
+  return rows;
+}
 // Incentive per IST day between from and to (see GET /api/incentive for the rules).
 function incentiveDays(from, to) {
   const [pr, ch] = [stages()[0].code, stages()[1].code];
@@ -468,7 +484,9 @@ function endOpenWork(u, qty, id) {
   if (!e) return false;
   // The count (racks, syrup cases) is optional: saved when given, left empty otherwise.
   const n = e.count_label && qty !== undefined && qty !== null && qty !== '' && Number.isInteger(Number(qty)) && Number(qty) >= 0 ? Number(qty) : null;
-  db.prepare('UPDATE entries SET end_at = ?, end_by = ?, qty = ?, entered_by = COALESCE(?, entered_by) WHERE id = ?').run(now(), u.id, n, u.entered_by ?? null, e.id);
+  // Syrup cases ended without a number: the cases typed in are the count.
+  const cases = n === null ? db.prepare('SELECT COUNT(*) AS c FROM syrup_cases WHERE entry_id = ?').get(e.id).c : 0;
+  db.prepare('UPDATE entries SET end_at = ?, end_by = ?, qty = ?, entered_by = COALESCE(?, entered_by) WHERE id = ?').run(now(), u.id, n ?? (cases || null), u.entered_by ?? null, e.id);
   return true;
 }
 function startingBill(u, prevQty, code) {
@@ -832,9 +850,23 @@ const routes = {
   'GET /api/work': async (req, res, u) => {
     const rows = db.prepare(`SELECT e.*, t.name AS task_name, t.count_label FROM entries e JOIN tasks t ON t.code = e.task_code
       WHERE e.bill_id IS NULL AND e.start_by = ? ORDER BY e.id DESC LIMIT 30`).all(u.id);
+    withCases(rows);
     // Only the owners (admin, ajanta) see who is not on any work.
     const idle = u.is_admin && !u.entered_by ? idleNames() : null;
     send(res, 200, { rows, busy: busyBill(u), busyAll: busyBills(u), onTask: liveOnTask(), idle });
+  },
+  // Syrup cases: add or remove one case (name + rack no.) on a running Syrup cases task.
+  'POST /api/syrup': async (req, res, u) => {
+    const { entry_id, case_name, rack_no, remove } = await readBody(req);
+    const e = db.prepare("SELECT * FROM entries WHERE id = ? AND task_code = 'O' AND bill_id IS NULL").get(entry_id);
+    if (!e) fail(404, 'Syrup cases task not found');
+    if (e.start_by !== u.id && !u.is_admin && !u.is_manager && !u.can_proxy) fail(403, 'Only the person doing this task can add cases');
+    if (remove) { db.prepare('DELETE FROM syrup_cases WHERE id = ? AND entry_id = ?').run(remove, e.id); return send(res, 200, { ok: true }); }
+    const name = String(case_name || '').trim().toUpperCase().slice(0, 80), rack = String(rack_no || '').trim().toUpperCase().slice(0, 20);
+    if (!name) fail(400, 'Type the case name');
+    if (!rack) fail(400, 'Type the rack no.');
+    db.prepare('INSERT INTO syrup_cases (entry_id, case_name, rack_no, at, by) VALUES (?, ?, ?, ?, ?)').run(e.id, name, rack, now(), u.entered_by || u.id);
+    send(res, 200, { ok: true });
   },
   'POST /api/work': async (req, res, u) => {
     const { action, task_code, id, note, qty, prev_qty } = await readBody(req);
@@ -929,9 +961,9 @@ const routes = {
     if (q.get('from')) { where.push('e.start_at >= ?'); params.push(q.get('from')); }
     if (q.get('to')) { where.push('e.start_at < ?'); params.push(q.get('to')); }
     if (q.get('verify')) where.push('e.end_at IS NOT NULL AND e.verified_at IS NULL AND t.needs_verify = 1');
-    send(res, 200, db.prepare(`SELECT e.*, t.name AS task_name, t.count_label, t.needs_verify, su.name AS start_by_name, vu.name AS verified_by_name, pu.name AS entered_by_name FROM entries e
+    send(res, 200, withCases(db.prepare(`SELECT e.*, t.name AS task_name, t.count_label, t.needs_verify, su.name AS start_by_name, vu.name AS verified_by_name, pu.name AS entered_by_name FROM entries e
       JOIN tasks t ON t.code = e.task_code LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users vu ON vu.id = e.verified_by LEFT JOIN users pu ON pu.id = e.entered_by
-      WHERE ${where.join(' AND ')} ORDER BY e.id DESC LIMIT 500`).all(...params));
+      WHERE ${where.join(' AND ')} ORDER BY e.id DESC LIMIT 500`).all(...params)));
   },
   // Who has (and hasn't) logged any job in the chosen period. Owners/managers only.
   'GET /api/admin/staff-status': async (req, res, u, q) => {
@@ -1011,7 +1043,7 @@ const server = http.createServer(async (req, res) => {
       }
       // "Enter for staff": work buttons pressed on someone else's behalf.
       const forId = Number(req.headers['x-for-user'] || 0);
-      const proxyPaths = ['/api/me', '/api/queue', '/api/bills', '/api/stage', '/api/work', '/api/bills/edit', '/api/points'];
+      const proxyPaths = ['/api/me', '/api/queue', '/api/bills', '/api/stage', '/api/work', '/api/bills/edit', '/api/points', '/api/syrup'];
       if (forId && u && proxyPaths.includes(url.pathname)) {
         // FARAZ (can_prep) may only start Preparing bills for others.
         if (!u.can_proxy && !(u.can_prep && req.method === 'POST' && url.pathname === '/api/bills')) fail(403, 'Not allowed to enter work for others');
