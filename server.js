@@ -295,6 +295,9 @@ migrate('2026-10-30-faraz-prep-entry', () => {
   db.prepare("UPDATE users SET can_prep = 1 WHERE username = 'faraz'").run();
 });
 
+// Owner, 2026-10-30: IRFAN gets the same simple Preparing Entry as FARAZ.
+migrate('2026-10-30-irfan-prep-entry', () => { db.prepare("UPDATE users SET can_prep = 1 WHERE username = 'irfan'").run(); });
+
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
 const stages = () => db.prepare('SELECT * FROM tasks WHERE stage_order IS NOT NULL ORDER BY stage_order').all();
