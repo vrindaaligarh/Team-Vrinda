@@ -917,6 +917,23 @@ async function viewDebtors(m) {
 }
 
 // ---------- Incentive (owners, manager): daily rewards from the VMA Incentive Rules ----------
+// Print sheet: only the employees who earned money, with a signature column.
+function printIncentive(title, earners) {
+  if (!earners.length) return toast('Nobody earned an incentive here', true);
+  const rs = (n) => n ? '₹' + n : '—', total = earners.reduce((n, r) => n + r.total, 0);
+  const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to print', true);
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>
+    body { font: 14px system-ui, sans-serif; color: #000; margin: 24px; } h1 { font-size: 20px; margin: 0; } h2 { font-size: 15px; font-weight: 600; margin: 4px 0 16px; }
+    table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid #444; padding: 8px; text-align: left; } th { background: #eee; }
+    td.n, th.n { text-align: right; } tfoot td { font-weight: 700; } .sig { width: 22%; } p { font-size: 12px; color: #444; margin-top: 18px; }
+    @page { size: A4; margin: 14mm; } </style></head><body>
+    <h1>Vrinda Medical Agencies</h1><h2>${esc(title)}</h2>
+    <table><thead><tr><th>#</th><th>Employee</th><th class="n">Items reward</th><th class="n">Speed bonus</th><th class="n">Checking reward</th><th class="n">Total</th><th class="sig">Signature</th></tr></thead><tbody>
+    ${earners.map((r, i) => `<tr><td>${i + 1}</td><td><b>${esc(r.name)}</b></td><td class="n">${rs(r.items)}</td><td class="n">${rs(r.speed)}</td><td class="n">${rs(r.check)}</td><td class="n"><b>₹${r.total}</b></td><td></td></tr>`).join('')}
+    </tbody><tfoot><tr><td colspan="5">Total · ${earners.length} employee${earners.length > 1 ? 's' : ''}</td><td class="n">₹${total}</td><td></td></tr></tfoot></table>
+    <p>Printed ${new Date().toLocaleString('en-IN')}</p></body></html>`);
+  w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
+}
 async function viewIncentive(m) {
   const today = new Date().toLocaleDateString('en-CA');
   const mode = filters.incMode || 'day', dayStr = filters.incDay || today, monStr = filters.incMonth || today.slice(0, 7);
@@ -929,10 +946,15 @@ async function viewIncentive(m) {
   const fmtDay = (x) => new Date(x + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
   const controls = `<section class="card"><div class="row" style="flex-wrap:wrap;gap:8px"><h2 class="grow" style="margin:0">Incentive</h2>
     <button class="btn small ${mode === 'day' ? '' : 'ghost'}" data-mode="day">Day</button><button class="btn small ${mode === 'month' ? '' : 'ghost'}" data-mode="month">Month</button>
-    ${mode === 'day' ? `<input type="date" id="incday" value="${dayStr}">` : `<input type="month" id="incmon" value="${monStr}">`}</div></section>`;
-  let body;
+    ${mode === 'day' ? `<input type="date" id="incday" value="${dayStr}">` : `<input type="month" id="incmon" value="${monStr}">`}<button class="btn green small" id="incprint">🖨 Print</button></div></section>`;
+  let body, earners = [], title;
   if (mode === 'day') {
     const d = days[0] || { preppers: [], checkers: [], checked: 0 };
+    const by = {};
+    for (const p of d.preppers) if (p.total) Object.assign((by[p.name] ||= { name: p.name, items: 0, speed: 0, check: 0 }), { items: p.dayReward, speed: p.speedReward });
+    for (const c of d.checkers) if (c.reward) (by[c.name] ||= { name: c.name, items: 0, speed: 0, check: 0 }).check = c.reward;
+    earners = Object.values(by).map((r) => ({ ...r, total: r.items + r.speed + r.check })).sort((a, b) => b.total - a.total);
+    title = 'Daily incentive · ' + new Date(dayStr + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     const total = d.preppers.reduce((n, p) => n + p.total, 0) + d.checkers.reduce((n, c) => n + c.reward, 0);
     body = `<div class="stats" style="margin-bottom:12px">${stat('₹' + total, 'Total incentive')}${stat(d.preppers.filter((p) => p.total).length + d.checkers.filter((c) => c.reward).length, 'Rewards earned')}${stat(d.preppers.reduce((n, p) => n + p.items, 0), 'Items prepared')}${stat(d.checked, 'Items checked')}</div>
       <section class="card"><h2>Preppers</h2>${d.preppers.length ? `<div class="scroll"><table><tr><th>Employee</th><th class="rs">Bills</th><th class="rs">Items</th><th class="rs">Points</th><th class="rs">Counted items</th><th class="rs">Items reward</th><th>Speed bonus (50+ item bills)</th><th class="rs">Total</th></tr>
@@ -954,6 +976,7 @@ async function viewIncentive(m) {
     }
     const list = Object.values(people).map((r) => ({ ...r, total: r.items + r.speed + r.check })).filter((r) => r.total).sort((a, b) => b.total - a.total);
     const sum = list.reduce((n, r) => n + r.total, 0);
+    earners = list; title = 'Monthly incentive · ' + new Date(monStr + '-01T00:00:00').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
     body = `<div class="stats" style="margin-bottom:12px">${stat('₹' + sum, 'Total incentive')}${stat(list.length, 'Employees earning')}${stat(days.length, 'Working days')}</div>
       <section class="card"><h2>Month total by employee</h2>${list.length ? `<div class="scroll"><table><tr><th>Employee</th><th class="rs">Items reward</th><th class="rs">Speed bonus</th><th class="rs">Checking reward</th><th class="rs">Days earned</th><th class="rs">Total</th></tr>
       ${list.map((r) => `<tr><td><b>${esc(r.name)}</b></td><td class="rs">${rs(r.items)}</td><td class="rs">${rs(r.speed)}</td><td class="rs">${rs(r.check)}</td><td class="rs">${r.days.size}</td><td class="rs">${rs(r.total)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No incentive earned this month yet.</p>'}</section>
@@ -968,6 +991,7 @@ async function viewIncentive(m) {
     Days run midnight to midnight by the Preparing or Checking start time. "All done" steps are not counted.</p></section>`;
   m.innerHTML = controls + body + rules;
   m.querySelectorAll('[data-mode]').forEach((b) => { b.onclick = () => { filters.incMode = b.dataset.mode; loadTab(); }; });
+  $('#incprint').onclick = () => printIncentive(title, earners);
   if ($('#incday')) $('#incday').onchange = (e) => { filters.incDay = e.target.value; loadTab(); };
   if ($('#incmon')) $('#incmon').onchange = (e) => { filters.incMonth = e.target.value; loadTab(); };
   m.querySelectorAll('[data-incday]').forEach((tr) => { tr.onclick = () => { filters.incMode = 'day'; filters.incDay = tr.dataset.incday; loadTab(); }; });
