@@ -321,6 +321,8 @@ migrate('2026-10-30-departments', () => {
   for (const [d, names] of Object.entries(list)) for (const n of names) set.run(d, n, n + ' %');
 });
 
+migrate('2026-10-30-rayyan-operations', () => { db.prepare("UPDATE users SET dept = 'Operations' WHERE username = 'rayyan'").run(); });
+
 // ---------- helpers ----------
 // Incentive per IST day between from and to (see GET /api/incentive for the rules).
 function incentiveDays(from, to) {
