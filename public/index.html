@@ -859,6 +859,21 @@ async function viewQuick(m) {
 }
 
 // ---------- Debtors (owners): upload Debtors.xls, see day-wise totals and the top 100 ----------
+// Remembers the linked Debtors file (a browser file handle) in this browser's IndexedDB.
+function handleStore(op, value) {
+  return new Promise((ok) => {
+    try {
+      const req = indexedDB.open('vma', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('files');
+      req.onerror = () => ok(null);
+      req.onsuccess = () => {
+        const tx = req.result.transaction('files', op === 'get' ? 'readonly' : 'readwrite'), st = tx.objectStore('files');
+        const r = op === 'get' ? st.get('debtors') : st.put(value, 'debtors');
+        r.onsuccess = () => ok(op === 'get' ? r.result || null : true); r.onerror = () => ok(null);
+      };
+    } catch { ok(null); }
+  });
+}
 const rupees = (n) => '₹' + Math.round(n).toLocaleString('en-IN');
 const loadXlsx = () => window.XLSX ? Promise.resolve() : new Promise((ok, bad) => { const sc = document.createElement('script'); sc.src = '/xlsx.full.min.js'; sc.onload = ok; sc.onerror = () => bad(new Error('Could not load the Excel reader')); document.head.appendChild(sc); });
 // Sheet names are days like "18 OCTOBER" (no year: the latest such date not after tomorrow), or 18-10-2026 / 2026-10-18.
@@ -904,10 +919,15 @@ async function viewDebtors(m) {
   const max = Math.max(1, ...d.days.map((x) => x.total));
   const change = (now, before) => before == null ? '<span class="sub">new</span>' : now === before ? '—' : `<span class="${now > before ? 'up' : 'down'}">${now > before ? '▲' : '▼'} ${rupees(Math.abs(now - before))}</span>`;
   const sumTop = d.top.reduce((n, r) => n + r.amount, 0), day = d.days.find((x) => x.date === d.date);
+  // Edge / Chrome on a computer can remember the file, so Refresh re-reads it in one tap.
+  const canLink = 'showOpenFilePicker' in window;
+  const linked = canLink ? await handleStore('get') : null;
   m.innerHTML = `<section class="card"><div class="row" style="flex-wrap:wrap;gap:10px"><div class="grow"><h2 style="margin:0">Source file</h2>
       <p class="sub" style="margin:4px 0 0">${last ? `Last loaded: <b>${esc(last.file_name || 'file')}</b> · ${fmtFull(last.uploaded_at)}${last.uploaded_by_name ? ' by ' + esc(last.uploaded_by_name) : ''}` : 'No file loaded yet.'}
       Pick your <b>Debtors.xls</b> (one sheet per day, e.g. "25 OCTOBER"). Only rows with <b>due</b> written in column D are counted. Load it again whenever you add a day; days already here are replaced.</p></div>
-      <label class="btn">Load Debtors file<input type="file" id="debtfile" accept=".xls,.xlsx,.xlsm,.csv" hidden></label></div></section>
+      <div class="row" style="gap:8px;flex-wrap:wrap">${canLink ? `<button class="btn green" id="debtrefresh">🔄 Refresh</button>` : ''}
+        <label class="btn ${canLink ? 'ghost' : ''}">${canLink ? (linked ? 'Change file' : 'Choose Debtors file') : 'Load Debtors file'}<input type="file" id="debtfile" accept=".xls,.xlsx,.xlsm,.csv" hidden></label></div></div>
+      ${canLink ? `<p class="sub" style="margin:8px 0 0">${linked ? `Linked to <b>${esc(linked.name)}</b> on this computer. Save the Excel file, then press <b>Refresh</b>.` : 'Press <b>Refresh</b> once and choose your Debtors.xls. After that, Refresh reads the same file again in one tap.'}</p>` : ''}</section>
     ${d.days.length ? `<section class="card"><h2>Day-wise due debtors total · ${d.days.length} days</h2><div class="scroll"><table>
       <tr><th>Date</th><th class="rs">Total debtors</th><th class="rs">Change</th><th class="rs">Due accounts</th><th style="width:30%"></th></tr>
       ${d.days.map((x, i) => `<tr data-day="${x.date}" class="${x.date === d.date ? 'pick' : ''}"><td><b>${fmtDay(x.date)}</b></td><td class="rs"><b>${rupees(x.total)}</b></td>
@@ -922,8 +942,7 @@ async function viewDebtors(m) {
       ${d.top.map((r, i) => `<tr data-q="${esc((r.party + ' ' + r.area + ' ' + r.grp).toUpperCase())}"><td>${i + 1}</td><td><b>${esc(r.party)}</b></td><td>${esc(r.area)}</td>
         <td><small>${esc(r.grp.replace(/^SUNDRY DEBTORS\s*/i, '') || '—')}</small></td><td class="rs"><b>${rupees(r.amount)}</b></td><td class="rs">${d.prev ? change(r.amount, r.prev_amount) : '—'}</td></tr>`).join('')}
       </table></div></section>` : ''}`;
-  $('#debtfile').onchange = async (e) => {
-    const file = e.target.files[0]; if (!file) return;
+  const loadFile = async (file) => {
     try {
       toast('Reading ' + file.name + '…');
       await loadXlsx();
@@ -934,6 +953,20 @@ async function viewDebtors(m) {
       toast(`Loaded ${days.length} day${days.length > 1 ? 's' : ''}${skipped.length ? ` · skipped sheets: ${skipped.join(', ')}` : ''}`);
       await loadTab();
     } catch (err) { toast(err.message, true); }
+  };
+  const pickAndLink = async () => {
+    const [h] = await window.showOpenFilePicker({ types: [{ description: 'Excel', accept: { 'application/vnd.ms-excel': ['.xls', '.xlsx', '.xlsm'] } }] });
+    await handleStore('set', h); return h;
+  };
+  $('#debtfile').onclick = (e) => { if (canLink) { e.preventDefault(); pickAndLink().then(async (h) => loadFile(await h.getFile())).catch((err) => err.name !== 'AbortError' && toast(err.message, true)); } };
+  $('#debtfile').onchange = (e) => { const f = e.target.files[0]; if (f) loadFile(f); };
+  if ($('#debtrefresh')) $('#debtrefresh').onclick = async () => {
+    try {
+      let h = await handleStore('get');
+      if (h && (await h.queryPermission({ mode: 'read' })) !== 'granted' && (await h.requestPermission({ mode: 'read' })) !== 'granted') h = null;
+      if (!h) h = await pickAndLink();
+      await loadFile(await h.getFile());
+    } catch (err) { if (err.name !== 'AbortError') toast(err.name === 'NotFoundError' ? 'The linked file was moved or renamed. Press Change file.' : err.message, true); }
   };
   if (!d.days.length) return;
   $('#debtday').onchange = (e) => { filters.debtDay = e.target.value; loadTab(); };
