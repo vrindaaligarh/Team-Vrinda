@@ -362,6 +362,11 @@ migrate('2026-10-30-attendance-late-status', () => {
   db.exec("ALTER TABLE attendance_late_ok ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'");
 });
 
+// Half day decisions (owner, 2026-10-30): approved (not counted as a half day) or rejected (Not approved: counted as normal).
+migrate('2026-10-30-attendance-half-ok', () => {
+  db.exec(`CREATE TABLE attendance_half_ok (date TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, at TEXT NOT NULL, by INTEGER REFERENCES users(id), PRIMARY KEY (date, name));`);
+});
+
 // ---------- attendance ----------
 // Same roster and PagarBook name matching as the Attendance tab (public/index.html, ATT_*). Rules start 20 Oct 2026.
 const ATT_START = '2026-10-20';
@@ -385,7 +390,22 @@ function attendanceData() {
   }
   out.approvals = db.prepare('SELECT a.date, a.name, a.status, a.day_revision AS dayRevision, a.at, x.name AS by FROM attendance_approvals a LEFT JOIN users x ON x.id = a.by').all();
   out.lateOk = db.prepare('SELECT l.date, l.name, l.status, l.at, x.name AS by FROM attendance_late_ok l LEFT JOIN users x ON x.id = l.by').all();
+  out.halfOk = db.prepare('SELECT l.date, l.name, l.status, l.at, x.name AS by FROM attendance_half_ok l LEFT JOIN users x ON x.id = l.by').all();
   return out;
+}
+
+// Saves (or with no status, removes) an approved / not approved choice for one person's late or half day on one day.
+async function attDecision(req, res, u, table) {
+  if (!canAttendance(u)) fail(403, 'Attendance is only for the owner and Mansi');
+  const { date, name, status } = await readBody(req);
+  if (status && !['approved', 'rejected'].includes(status)) fail(400, 'Choose approved or not approved');
+  const day = db.prepare('SELECT * FROM attendance_days WHERE date = ?').get(String(date || ''));
+  if (!day) fail(404, 'No attendance saved for this day');
+  const n = attName(name);
+  if (!ATT_NAMES.includes(n) || !JSON.parse(day.rows).some((r) => attName(r.name) === n && attHasPunch(r.stamps))) fail(400, `${n} has no punch that day`);
+  if (status) db.prepare(`INSERT OR REPLACE INTO ${table} (date, name, status, at, by) VALUES (?, ?, ?, ?, ?)`).run(day.date, n, status, now(), u.id);
+  else db.prepare(`DELETE FROM ${table} WHERE date = ? AND name = ?`).run(day.date, n);
+  send(res, 200, { ok: true });
 }
 
 // ---------- helpers ----------
@@ -801,18 +821,9 @@ const routes = {
   },
   // One person's late on one day: status 'approved' (not counted), 'rejected' (Not approved, counted), or none (undo).
   // Kept even if the day's file is uploaded again.
-  'POST /api/attendance/late': async (req, res, u) => {
-    if (!canAttendance(u)) fail(403, 'Attendance is only for the owner and Mansi');
-    const { date, name, status } = await readBody(req);
-    if (status && !['approved', 'rejected'].includes(status)) fail(400, 'Choose approved or not approved');
-    const day = db.prepare('SELECT * FROM attendance_days WHERE date = ?').get(String(date || ''));
-    if (!day) fail(404, 'No attendance saved for this day');
-    const n = attName(name);
-    if (!ATT_NAMES.includes(n) || !JSON.parse(day.rows).some((r) => attName(r.name) === n && attHasPunch(r.stamps))) fail(400, `${n} has no punch that day`);
-    if (status) db.prepare('INSERT OR REPLACE INTO attendance_late_ok (date, name, status, at, by) VALUES (?, ?, ?, ?, ?)').run(day.date, n, status, now(), u.id);
-    else db.prepare('DELETE FROM attendance_late_ok WHERE date = ? AND name = ?').run(day.date, n);
-    send(res, 200, { ok: true });
-  },
+  'POST /api/attendance/late': async (req, res, u) => attDecision(req, res, u, 'attendance_late_ok'),
+  // Same for a half day: 'approved' (not counted as a half day), 'rejected' (Not approved, counted), or none (undo).
+  'POST /api/attendance/half': async (req, res, u) => attDecision(req, res, u, 'attendance_half_ok'),
   'POST /api/bills/edit': async (req, res, u) => {
     const body = await readBody(req);
     const [bill] = billRows('WHERE b.id = ?', [body.bill_id]);
