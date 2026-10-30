@@ -330,14 +330,28 @@ migrate('2026-10-30-syrup-cases', () => {
     CREATE INDEX syrup_cases_entry ON syrup_cases(entry_id);`);
 });
 
+// Rack Setting (L): the person types each rack number they set (owner, 2026-10-30).
+migrate('2026-10-30-rack-numbers', () => {
+  db.exec(`CREATE TABLE rack_sets (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+    rack_no TEXT NOT NULL, at TEXT NOT NULL, by INTEGER REFERENCES users(id));
+    CREATE INDEX rack_sets_entry ON rack_sets(entry_id);`);
+});
+
 // ---------- helpers ----------
 // Adds .cases (syrup case name + rack) to work rows of the Syrup cases task.
 function withCases(rows) {
+  withRacks(rows);
   const ids = rows.filter((r) => r.task_code === 'O').map((r) => r.id);
   if (!ids.length) return rows;
   const by = {};
   for (const c of db.prepare(`SELECT id, entry_id, case_name, rack_no, at FROM syrup_cases WHERE entry_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`).all(...ids)) (by[c.entry_id] ||= []).push(c);
   for (const r of rows) if (r.task_code === 'O') r.cases = by[r.id] || [];
+  return rows;
+}
+// Adds .racks (rack numbers) to work rows of the Rack Setting task.
+const rackList = (entryId) => db.prepare('SELECT id, rack_no FROM rack_sets WHERE entry_id = ? ORDER BY id').all(entryId);
+function withRacks(rows) {
+  for (const r of rows) if (r.task_code === 'L') r.racks = rackList(r.id);
   return rows;
 }
 // Incentive per IST day between from and to (see GET /api/incentive for the rules).
@@ -485,7 +499,7 @@ function endOpenWork(u, qty, id) {
   // The count (racks, syrup cases) is optional: saved when given, left empty otherwise.
   const n = e.count_label && qty !== undefined && qty !== null && qty !== '' && Number.isInteger(Number(qty)) && Number(qty) >= 0 ? Number(qty) : null;
   // Syrup cases ended without a number: the cases typed in are the count.
-  const cases = n === null ? db.prepare('SELECT COUNT(*) AS c FROM syrup_cases WHERE entry_id = ?').get(e.id).c : 0;
+  const cases = n === null ? db.prepare('SELECT (SELECT COUNT(*) FROM syrup_cases WHERE entry_id = ?1) + (SELECT COUNT(*) FROM rack_sets WHERE entry_id = ?1) AS c').get(e.id).c : 0;
   db.prepare('UPDATE entries SET end_at = ?, end_by = ?, qty = ?, entered_by = COALESCE(?, entered_by) WHERE id = ?').run(now(), u.id, n ?? (cases || null), u.entered_by ?? null, e.id);
   return true;
 }
@@ -868,6 +882,19 @@ const routes = {
     db.prepare('INSERT INTO syrup_cases (entry_id, case_name, rack_no, at, by) VALUES (?, ?, ?, ?, ?)').run(e.id, name, rack, now(), u.entered_by || u.id);
     send(res, 200, { ok: true });
   },
+  // Rack Setting: add rack numbers (one or many: "1, 5, 615") or remove one; returns the task's whole list.
+  'POST /api/racks': async (req, res, u) => {
+    const { entry_id, racks, remove } = await readBody(req);
+    const e = db.prepare("SELECT * FROM entries WHERE id = ? AND task_code = 'L' AND bill_id IS NULL").get(entry_id);
+    if (!e) fail(404, 'Rack Setting task not found');
+    if (e.start_by !== u.id && !u.is_admin && !u.is_manager && !u.can_proxy) fail(403, 'Only the person doing this task can add racks');
+    if (remove) db.prepare('DELETE FROM rack_sets WHERE id = ? AND entry_id = ?').run(remove, e.id);
+    const have = new Set(rackList(e.id).map((r) => r.rack_no));
+    const add = String(racks || '').toUpperCase().split(/[\s,;/]+/).map((x) => x.trim().slice(0, 20)).filter(Boolean);
+    const dup = add.filter((x) => have.has(x));
+    for (const x of add) if (!have.has(x)) { db.prepare('INSERT INTO rack_sets (entry_id, rack_no, at, by) VALUES (?, ?, ?, ?)').run(e.id, x, now(), u.entered_by || u.id); have.add(x); }
+    send(res, 200, { racks: rackList(e.id), dup });
+  },
   'POST /api/work': async (req, res, u) => {
     const { action, task_code, id, note, qty, prev_qty } = await readBody(req);
     if (action === 'start') {
@@ -1043,7 +1070,7 @@ const server = http.createServer(async (req, res) => {
       }
       // "Enter for staff": work buttons pressed on someone else's behalf.
       const forId = Number(req.headers['x-for-user'] || 0);
-      const proxyPaths = ['/api/me', '/api/queue', '/api/bills', '/api/stage', '/api/work', '/api/bills/edit', '/api/points', '/api/syrup'];
+      const proxyPaths = ['/api/me', '/api/queue', '/api/bills', '/api/stage', '/api/work', '/api/bills/edit', '/api/points', '/api/syrup', '/api/racks'];
       if (forId && u && proxyPaths.includes(url.pathname)) {
         // FARAZ (can_prep) may only start Preparing bills for others.
         if (!u.can_proxy && !(u.can_prep && req.method === 'POST' && url.pathname === '/api/bills')) fail(403, 'Not allowed to enter work for others');

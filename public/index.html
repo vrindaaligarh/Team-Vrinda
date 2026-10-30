@@ -113,6 +113,9 @@
   .dbar { height: 6px; border-radius: 3px; background: var(--primary); opacity: .7; min-width: 2px; }
   tr.pick { background: var(--amber-bg); }
   tr[data-day] { cursor: pointer; }
+  .rk { display: flex; flex-wrap: wrap; gap: 6px; }
+  .rk button { border: 1.5px solid var(--primary); background: var(--card); color: var(--text); border-radius: 99px; padding: 6px 12px; font: 700 16px ui-monospace, monospace; cursor: pointer; }
+  .rk button span { color: var(--muted); font-size: 12px; margin-left: 2px; }
   #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; display: none; z-index: 10; max-width: 90vw; }
   #updating { position: fixed; left: 0; right: 0; top: 0; background: #9a6700; color: #fff; padding: 12px 16px; text-align: center; font-weight: 600; z-index: 20; }
   #toast.err { background: var(--red); color: #fff; }
@@ -365,6 +368,7 @@ async function viewOther(m) {
   const now = (busy
     ? busyAll.map((x) => `<section class="card now"><div class="row"><span class="code">${x.task_code}</span><div class="grow"><b>${esc(x.task_name)} · Bill ${esc(x.bill_no)}${x.items ? ' · ' + x.items + ' items' : ''}${x.with_name ? ' · with ' + esc(x.with_name) : ''}</b><div class="sub" style="margin:0">Started ${fmtTime(x.start_at)} · ${ago(x.start_at)}</div></div>${x.task_code === 'CH' ? pointsSel(x.bill_id, x.points) : ''}${x.task_code === stageCodes[0] ? editBtn(x.bill_id, x.bill_no, x.items) : ''}<button class="btn amber" data-a="end" data-b="${x.bill_id}" data-t="${x.task_code}">End</button></div></section>`).join('') : '')
     + (running ? `<section class="card now"><div class="row"><span class="code">${running.task_code}</span><div class="grow"><b>${esc(running.task_name)}</b><div class="sub" style="margin:0">Started ${fmtTime(running.start_at)} · ${ago(running.start_at)}</div></div><button class="btn amber" data-id="${running.id}">End</button></div>
+      ${running.racks ? `<form id="rackform" class="row" style="margin-top:10px" autocomplete="off"><input name="rack" inputmode="numeric" enterkeyhint="go" placeholder="Rack no." autocapitalize="characters" style="flex:1;font-size:22px;font-weight:700;text-align:center;letter-spacing:.06em"><button class="btn green">Add</button></form><div id="rackchips">${rackChips(running.racks)}</div>` : ''}
       ${running.cases ? `<form id="syrupform" class="row" style="flex-wrap:wrap;margin-top:10px"><input name="case_name" placeholder="Case name" autocapitalize="characters" autocomplete="off" style="flex:2 1 160px" required>
         <input name="rack_no" placeholder="Rack no." autocapitalize="characters" autocomplete="off" style="flex:1 1 90px" required><button class="btn green">Add</button></form>
         ${running.cases.length ? `<p class="sub" style="margin:8px 0 4px"><b>${running.cases.length} case${running.cases.length > 1 ? 's' : ''} set</b></p><div class="chips">${running.cases.map((c) => `<span class="chip off" style="border-style:solid">${esc(c.case_name)}<small>Rack ${esc(c.rack_no)} · ${fmtTime(c.at)} <a href="#" data-unsyrup="${c.id}">remove</a></small></span>`).join('')}</div>` : '<p class="sub" style="margin:8px 0 0">Add each syrup case and the rack you put it on.</p>'}` : ''}</section>` : '');
@@ -431,6 +435,15 @@ async function viewOther(m) {
     };
     search.oninput = filter; filter();
   }
+  // Rack Setting: add rack numbers in place so the keypad stays open between racks.
+  const rf = $('#rackform');
+  if (rf) {
+    let racks = running.racks;
+    const draw = () => { $('#rackchips').innerHTML = rackChips(racks); };
+    const send = async (body) => { try { const r = await api('POST', '/api/racks', { entry_id: running.id, ...body }); racks = r.racks; running.racks = racks; draw(); if (r.dup.length) toast(`Already added: ${r.dup.join(', ')}`, true); } catch (err) { toast(err.message, true); } };
+    rf.onsubmit = (e) => { e.preventDefault(); const v = rf.rack.value.trim(); if (!v) return rf.rack.focus(); rf.rack.value = ''; rf.rack.focus(); send({ racks: v }); };
+    $('#rackchips').onclick = (e) => { const c = e.target.closest('[data-unrack]'); if (c) { e.stopPropagation(); send({ remove: +c.dataset.unrack }); } };
+  }
   const sf = $('#syrupform');
   if (sf) sf.onsubmit = (e) => { e.preventDefault(); act(sf.querySelector('button'), () => api('POST', '/api/syrup', { entry_id: running.id, case_name: sf.case_name.value, rack_no: sf.rack_no.value }), `Added ${sf.case_name.value.toUpperCase()} on rack ${sf.rack_no.value.toUpperCase()}`); };
   m.onclick = (e) => {
@@ -459,7 +472,8 @@ async function viewOther(m) {
     const d = e.target.closest('button[data-id]');
     if (d) {
       // Syrup cases: the number of cases added is the count, no question.
-      const qty = running && running.cases && running.cases.length ? running.cases.length : running && running.count_label ? askQty(running.count_label) : undefined;
+      const listed = running && ((running.cases || []).length + (running.racks || []).length);
+      const qty = listed ? listed : running && running.count_label ? askQty(running.count_label) : undefined;
       return act(d, () => api('POST', '/api/work', { action: 'end', id: +d.dataset.id, qty }), 'Ended');
     }
   };
@@ -598,7 +612,9 @@ const billTools = (b) => `${canEditBills() ? editBtn(b.id, b.bill_no, b.items) :
 const waitTag = (iso, label) => { if (!iso) return ''; const min = (Date.now() - Date.parse(iso)) / 60000; return `<span class="pill ${min >= 30 ? 'red' : min >= 15 ? 'amber' : 'gray'}" style="margin-top:4px;font-size:11px">${label} ${ago(iso)}</span>`; };
 const itemsTag = (b) => b.items ? `<small class="items">${b.items} items</small>` : '';
 const casesText = (r) => (r.cases || []).map((c) => `${esc(c.case_name)} → rack ${esc(c.rack_no)}`).join('<br>');
-const countCell = (r) => (r.count_label ? (r.qty != null ? `<b>${r.qty}</b> ${esc(r.count_label)}` : '') : '') + (r.cases && r.cases.length ? `<small>${casesText(r)}</small>` : '');
+const countCell = (r) => (r.count_label ? (r.qty != null ? `<b>${r.qty}</b> ${esc(r.count_label)}` : '') : '') + (r.cases && r.cases.length ? `<small>${casesText(r)}</small>` : '')
+  + (r.racks && r.racks.length ? `<small>Racks ${r.racks.map((x) => esc(x.rack_no)).join(', ')}</small>` : '');
+const rackChips = (racks) => racks.length ? `<p class="sub" style="margin:8px 0 4px"><b>${racks.length} rack${racks.length > 1 ? 's' : ''} set</b> · tap a number to remove it</p><div class="rk">${racks.map((x) => `<button type="button" data-unrack="${x.id}">${esc(x.rack_no)} <span>✕</span></button>`).join('')}</div>` : '<p class="sub" style="margin:8px 0 0">Type each rack number and press Add (or Go). You can also type several at once: 1, 5, 615.</p>';
 
 // ---------- My Jobs: the person's own jobs with verification ticks ----------
 async function viewMine(m) {
