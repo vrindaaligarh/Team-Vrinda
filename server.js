@@ -311,6 +311,16 @@ migrate('2026-10-30-debtors', () => {
 // Daily incentive email: which days were already mailed.
 migrate('2026-10-30-incentive-mail', () => { db.exec('CREATE TABLE incentive_mail (date TEXT PRIMARY KEY, sent_at TEXT NOT NULL, recipients TEXT)'); });
 
+// Departments (owner's list, 2026-10-30), used to filter the Daily Report.
+migrate('2026-10-30-departments', () => {
+  db.exec("ALTER TABLE users ADD COLUMN dept TEXT NOT NULL DEFAULT ''");
+  const set = db.prepare('UPDATE users SET dept = ? WHERE upper(name) = ? OR upper(name) LIKE ?');
+  const list = { Computer: ['AFZAL', 'BHAKTI', 'DIYA', 'MANSI', 'NEHA', 'POOJA', 'RIYA', 'RIZWAN', 'SIYA', 'SHEBI', 'SUMAN', 'YASH', 'PRIYANSHI'],
+    Manager: ['ARUN', 'VICKY'], Operations: ['ANAS', 'AZEEM', 'ABHAY', 'FARAZ', 'HAMZA', 'JUNAID', 'REHAN', 'SAFFAN', 'SUFIYAN', 'ZUHAIB', 'NAVED', 'ADNAN', 'RAJ'],
+    Setting: ['SAIF', 'FARHAN', 'HAYYUL', 'MUKUL', 'SONU'], Supply: ['DORI', 'HIMANSHU', 'IRFAN', 'ROCKY', 'TALHA'] };
+  for (const [d, names] of Object.entries(list)) for (const n of names) set.run(d, n, n + ' %');
+});
+
 // ---------- helpers ----------
 // Incentive per IST day between from and to (see GET /api/incentive for the rules).
 function incentiveDays(from, to) {
@@ -363,13 +373,12 @@ function incentiveDays(from, to) {
 // Daily report for one IST day (owner, 2026-10-30): per person Preparing items, share, points, speed, Checking items and share,
 // racks set (L), syrup cases set (O), bills polythene packed (PK), transport checks (P), break time (T),
 // and time not punched = gaps between their first punch and last punch that no bill step or work task covers.
-// Computer operators the owner leaves out of the Daily Report (2026-10-30).
-const REPORT_SKIP = ['AFZAL', 'YASH', 'SUMAN', 'SIYA', 'SHEBI', 'RIZWAN', 'RIYA', 'NEHA', 'MANSI', 'BHAKTI', 'DIYA'];
 function dailyReport(date) {
   const from = new Date(date + 'T00:00:00+05:30').toISOString(), to = new Date(Date.parse(from) + 86400e3).toISOString();
   const inc = incentiveDays(from, to)[0] || { preppers: [], checkers: [], checked: 0 };
   const people = {};
-  const get = (n) => (people[n] ||= { name: n, items: 0, itemsPct: 0, points: 0, speed: 0, checked: 0, checkedPct: 0, racks: 0, syrup: 0, packed: 0, transport: 0, transportMin: 0, breakMin: 0, idleMin: 0, workMin: 0, first: null, last: null });
+  const depts = Object.fromEntries(db.prepare('SELECT name, dept FROM users').all().map((x) => [x.name, x.dept || 'Other']));
+  const get = (n) => (people[n] ||= { name: n, dept: depts[n] || 'Other', items: 0, itemsPct: 0, points: 0, speed: 0, checked: 0, checkedPct: 0, racks: 0, syrup: 0, packed: 0, transport: 0, transportMin: 0, breakMin: 0, idleMin: 0, workMin: 0, first: null, last: null });
   const totalPrep = inc.preppers.reduce((n, p) => n + p.items, 0);
   for (const p of inc.preppers) Object.assign(get(p.name), { items: p.items, itemsPct: totalPrep ? +(p.items / totalPrep * 100).toFixed(1) : 0, points: p.points, speed: p.speed });
   for (const c of inc.checkers) Object.assign(get(c.name), { checked: c.items, checkedPct: c.pct });
@@ -399,7 +408,7 @@ function dailyReport(date) {
     Object.assign(p, { first: new Date(first).toISOString(), last: new Date(last).toISOString(), workMin: Math.round((last - first) / 60000), idleMin: Math.round((last - first - covered) / 60000) });
   }
   for (const p of Object.values(people)) { p.breakMin = Math.round(p.breakMin); p.transportMin = Math.round(p.transportMin); p.checked = Math.round(p.checked); }
-  return { date, totalPrep, totalChecked: inc.checked, people: Object.values(people).filter((p) => !REPORT_SKIP.includes(p.name)).sort((a, b) => b.items - a.items || b.checked - a.checked || a.name.localeCompare(b.name)) };
+  return { date, totalPrep, totalChecked: inc.checked, people: Object.values(people).sort((a, b) => b.items - a.items || b.checked - a.checked || a.name.localeCompare(b.name)) };
 }
 // Who earned money on one day: [{ name, items, speed, check, total }], biggest first.
 function incentiveEarners(d) {

@@ -923,30 +923,35 @@ async function viewReport(m) {
   const hm = (min) => !min ? '—' : min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`;
   const n0 = (n, suf = '') => n ? n + suf : '—';
   const long = new Date(day + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-  const sum = (k) => r.people.reduce((n, p) => n + (p[k] || 0), 0);
+  const DEPTS = ['Operations', 'Setting', 'Supply', 'Computer', 'Manager', 'Other'].filter((d) => r.people.some((p) => p.dept === d));
+  const dept = DEPTS.includes(filters.repDept) ? filters.repDept : '';
+  const people = r.people.filter((p) => !dept || p.dept === dept);
+  const sum = (k) => people.reduce((n, p) => n + (p[k] || 0), 0);
   const table = `<table><thead><tr><th>Person</th><th class="rs">Total items</th><th class="rs">% of items</th><th class="rs">Points</th><th class="rs">Speed</th>
     <th class="rs">Sale goods checked</th><th class="rs">% checked</th><th class="rs">Racks set</th><th class="rs">Syrup set</th><th class="rs">Polythene packed</th>
     <th class="rs">Transport checked</th><th class="rs">Time not punched</th><th class="rs">Break</th><th>First – last punch</th></tr></thead><tbody>
-    ${r.people.map((p) => `<tr><td><b>${esc(p.name)}</b></td><td class="rs"><b>${n0(p.items)}</b></td><td class="rs">${n0(p.itemsPct, '%')}</td>
+    ${people.map((p) => `<tr><td><b>${esc(p.name)}</b>${dept ? '' : ` <small class="sub">${esc(p.dept)}</small>`}</td><td class="rs"><b>${n0(p.items)}</b></td><td class="rs">${n0(p.itemsPct, '%')}</td>
       <td class="rs">${p.points ? `<span class="late">${p.points}</span>` : '—'}</td><td class="rs">${p.speed ? `<span class="${p.speed < 2 ? 'late' : ''}">${p.speed}</span>` : '—'}</td>
       <td class="rs">${n0(p.checked)}</td><td class="rs">${n0(p.checkedPct, '%')}</td><td class="rs">${n0(p.racks)}</td><td class="rs">${n0(p.syrup)}</td><td class="rs">${n0(p.packed)}</td>
       <td class="rs">${p.transport ? `${p.transport}× · ${hm(p.transportMin)}` : '—'}</td><td class="rs">${p.idleMin ? `<span class="${p.idleMin >= 30 ? 'late' : ''}">${hm(p.idleMin)}</span>` : '—'}</td>
       <td class="rs">${p.breakMin ? `<span class="${p.breakMin > 45 ? 'late' : ''}">${hm(p.breakMin)}</span>` : '—'}</td><td><small>${p.first ? `${fmtTime(p.first)} – ${fmtTime(p.last)}` : '—'}</small></td></tr>`).join('')}
-    </tbody><tfoot><tr style="font-weight:700"><td>Total · ${r.people.length}</td><td class="rs">${r.totalPrep}</td><td></td><td class="rs">${sum('points') || '—'}</td><td></td><td class="rs">${r.totalChecked}</td><td></td>
+    </tbody><tfoot><tr style="font-weight:700"><td>Total · ${people.length}</td><td class="rs">${sum('items') || '—'}</td><td></td><td class="rs">${sum('points') || '—'}</td><td></td><td class="rs">${sum('checked') || '—'}</td><td></td>
       <td class="rs">${sum('racks') || '—'}</td><td class="rs">${sum('syrup') || '—'}</td><td class="rs">${sum('packed') || '—'}</td><td class="rs">${sum('transport') || '—'}</td><td class="rs">${hm(sum('idleMin'))}</td><td class="rs">${hm(sum('breakMin'))}</td><td></td></tr></tfoot></table>`;
   m.innerHTML = `<section class="card"><div class="row" style="flex-wrap:wrap;gap:8px"><h2 class="grow" style="margin:0">Daily report · ${long}</h2>
-      <input type="date" id="repday" value="${day}"><button class="btn green small" id="repprint">🖨 Print</button></div></section>
-    <section class="card">${r.people.length ? `<div class="scroll">${table}</div>` : '<p class="empty">No punches on this day.</p>'}
+      <input type="date" id="repday" value="${day}"><button class="btn green small" id="repprint">🖨 Print</button></div>
+      <div class="row" style="flex-wrap:wrap;gap:6px;margin-top:10px">${['', ...DEPTS].map((d) => `<button class="btn small ${d === dept ? '' : 'ghost'}" data-dept="${d}">${d || 'All departments'} · ${d ? r.people.filter((p) => p.dept === d).length : r.people.length}</button>`).join('')}</div></section>
+    <section class="card">${people.length ? `<div class="scroll">${table}</div>` : '<p class="empty">No punches on this day.</p>'}
     <p class="sub" style="margin:10px 0 0">Speed = items per minute while Preparing (bills done together count as one batch). Checked items are split in half when two people check together.
       Racks set = Rack Setting (L), Syrup set = Syrup cases (O), Polythene packed = bills marked Packed now, Transport checked = Transport check (P) times.
       Time not punched = gaps between the first and last punch with no bill or work running. Break = Break (T) time. Red: speed below 2, 30+ minutes not punched, break over 45 minutes.</p></section>`;
   $('#repday').onchange = (e) => { filters.repDay = e.target.value; loadTab(); };
+  m.querySelectorAll('[data-dept]').forEach((b) => { b.onclick = () => { filters.repDept = b.dataset.dept; loadTab(); }; });
   $('#repprint').onclick = () => {
     const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to print', true);
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Daily report ${day}</title><style>
       body { font: 11px system-ui, sans-serif; margin: 16px; color: #000; } h1 { font-size: 17px; margin: 0; } h2 { font-size: 13px; font-weight: 600; margin: 3px 0 12px; }
       table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid #555; padding: 4px 5px; } th { background: #eee; font-size: 10px; } .rs { text-align: right; } .late { color: #000; font-weight: 700; } small { font-size: 10px; }
-      @page { size: A4 landscape; margin: 10mm; }</style></head><body><h1>Vrinda Medical Agencies</h1><h2>Daily report · ${long}</h2>${table}</body></html>`);
+      @page { size: A4 landscape; margin: 10mm; }</style></head><body><h1>Vrinda Medical Agencies</h1><h2>Daily report · ${long}${dept ? ' · ' + esc(dept) : ''}</h2>${table}</body></html>`);
     w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
   };
 }
