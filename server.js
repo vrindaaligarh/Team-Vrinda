@@ -363,6 +363,8 @@ function incentiveDays(from, to) {
 // Daily report for one IST day (owner, 2026-10-30): per person Preparing items, share, points, speed, Checking items and share,
 // racks set (L), syrup cases set (O), bills polythene packed (PK), transport checks (P), break time (T),
 // and time not punched = gaps between their first punch and last punch that no bill step or work task covers.
+// Computer operators the owner leaves out of the Daily Report (2026-10-30).
+const REPORT_SKIP = ['AFZAL', 'YASH', 'SUMAN', 'SIYA', 'SHEBI', 'RIZWAN', 'RIYA', 'NEHA', 'MANSI', 'BHAKTI', 'DIYA'];
 function dailyReport(date) {
   const from = new Date(date + 'T00:00:00+05:30').toISOString(), to = new Date(Date.parse(from) + 86400e3).toISOString();
   const inc = incentiveDays(from, to)[0] || { preppers: [], checkers: [], checked: 0 };
@@ -397,7 +399,7 @@ function dailyReport(date) {
     Object.assign(p, { first: new Date(first).toISOString(), last: new Date(last).toISOString(), workMin: Math.round((last - first) / 60000), idleMin: Math.round((last - first - covered) / 60000) });
   }
   for (const p of Object.values(people)) { p.breakMin = Math.round(p.breakMin); p.transportMin = Math.round(p.transportMin); p.checked = Math.round(p.checked); }
-  return { date, totalPrep, totalChecked: inc.checked, people: Object.values(people).sort((a, b) => b.items - a.items || b.checked - a.checked || a.name.localeCompare(b.name)) };
+  return { date, totalPrep, totalChecked: inc.checked, people: Object.values(people).filter((p) => !REPORT_SKIP.includes(p.name)).sort((a, b) => b.items - a.items || b.checked - a.checked || a.name.localeCompare(b.name)) };
 }
 // Who earned money on one day: [{ name, items, speed, check, total }], biggest first.
 function incentiveEarners(d) {
