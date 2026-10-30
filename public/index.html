@@ -240,7 +240,7 @@ function tabs() {
   if (state.me.verify_codes.length && !state.me.is_admin && !state.me.is_manager) t.push(['verify', 'Verify Jobs']);
   if (state.me.is_admin || state.me.tasks.includes('FR')) t.push(['final', 'Final Verification']);
   if (state.me.can_proxy && !state.me.is_admin && !state.me.is_manager) t.push(['all', 'All Bills']);
-  if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['status', 'Staff Status'], ['report', 'Daily Report'], ['incentive', 'Incentive'], ['fixes', 'Fix Requests']);
+  if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['status', 'Staff Status'], ['report', 'Daily Report'], ['items', 'Verify Racks'], ['incentive', 'Incentive'], ['fixes', 'Fix Requests']);
   if (state.me.is_admin) t.push(['staff', 'Staff'], ['codes', 'Task Codes']);
   return t;
 }
@@ -275,7 +275,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, debtors: viewDebtors, incentive: viewIncentive, report: viewReport, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, debtors: viewDebtors, incentive: viewIncentive, report: viewReport, items: viewItems, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -614,7 +614,8 @@ const itemsTag = (b) => b.items ? `<small class="items">${b.items} items</small>
 const casesText = (r) => (r.cases || []).map((c) => `${esc(c.case_name)} → rack ${esc(c.rack_no)}`).join('<br>');
 const countCell = (r) => (r.count_label ? (r.qty != null ? `<b>${r.qty}</b> ${esc(r.count_label)}` : '') : '') + (r.cases && r.cases.length ? `<small>${casesText(r)}</small>` : '')
   + (r.racks && r.racks.length ? `<small>Racks ${r.racks.map((x) => esc(x.rack_no)).join(', ')}</small>` : '');
-const rackChips = (racks) => racks.length ? `<p class="sub" style="margin:8px 0 4px"><b>${racks.length} rack${racks.length > 1 ? 's' : ''} set</b> · tap a number to remove it</p><div class="rk">${racks.map((x) => `<button type="button" data-unrack="${x.id}">${esc(x.rack_no)} <span>✕</span></button>`).join('')}</div>` : '<p class="sub" style="margin:8px 0 0">Type each rack number and press Add (or Go). You can also type several at once: 1, 5, 615.</p>';
+const tick = (x) => x.verified_at ? ' <span title="Verified" style="color:var(--green)">✓</span>' : '';
+const rackChips = (racks) => racks.length ? `<p class="sub" style="margin:8px 0 4px"><b>${racks.length} rack${racks.length > 1 ? 's' : ''} set</b> · tap a number to remove it</p><div class="rk">${racks.map((x) => `<button type="button" data-unrack="${x.id}">${esc(x.rack_no)}${tick(x)} <span>✕</span></button>`).join('')}</div>` : '<p class="sub" style="margin:8px 0 0">Type each rack number and press Add (or Go). You can also type several at once: 1, 5, 615.</p>';
 
 // ---------- My Jobs: the person's own jobs with verification ticks ----------
 async function viewMine(m) {
@@ -941,6 +942,25 @@ async function viewDebtors(m) {
   $('#debtsearch').oninput = filter; filter();
 }
 
+// ---------- Verify Racks (Arun, owners): tick each rack, tube rack and syrup case ----------
+async function viewItems(m) {
+  const jobs = await api('GET', '/api/item-verify');
+  const items = (j) => [...(j.racks || []).map((x) => ({ kind: 'rack', id: x.id, label: x.rack_no, v: x.verified_at })), ...(j.cases || []).map((x) => ({ kind: 'case', id: x.id, label: `${x.case_name} · rack ${x.rack_no}`, v: x.verified_at }))];
+  const waiting = jobs.reduce((n, j) => n + items(j).filter((x) => !x.v).length, 0);
+  m.innerHTML = `<section class="card"><h2>Verify racks, tube racks and syrup cases · ${waiting} waiting</h2>
+    <p class="sub">Last 3 days. Tap each rack or case after checking it. When every item of a finished job is ticked, the whole job is verified.</p></section>
+    ${jobs.map((j) => { const l = items(j), left = l.filter((x) => !x.v).length; return `<section class="card"><div class="row" style="flex-wrap:wrap"><span class="code">${j.task_code}</span>
+      <div class="grow"><b>${esc(j.start_by_name || '')}</b> · ${esc(j.task_name)}<div class="sub" style="margin:0">${fmtFull(j.start_at)} – ${j.end_at ? fmtTime(j.end_at) : 'running'} · ${l.length - left} of ${l.length} verified${j.verified_at ? ` · <span class="pill green">✓ Job verified by ${esc(j.verified_by_name || '')}</span>` : ''}</div></div>
+      ${left ? `<button class="btn green small" data-vall="${j.id}">Verify all ${left}</button>` : `<button class="btn ghost small" data-vundo="${j.id}">Undo all</button>`}</div>
+      <div class="rk" style="margin-top:10px">${l.map((x) => `<button type="button" data-vk="${x.kind}" data-vid="${x.id}" data-v="${x.v ? 1 : ''}" style="${x.v ? 'background:var(--green-bg);border-color:var(--green)' : ''}">${esc(x.label)} <span>${x.v ? '✓' : 'tap'}</span></button>`).join('')}</div></section>`; }).join('') || '<section class="card"><p class="empty">No rack, tube rack or syrup case lists in the last 3 days.</p></section>'}`;
+  m.onclick = (e) => {
+    const b = e.target.closest('[data-vk]');
+    if (b) return act(b, () => api('POST', '/api/item-verify', { kind: b.dataset.vk, id: +b.dataset.vid, undo: !!b.dataset.v }), b.dataset.v ? 'Unticked' : 'Verified');
+    const a = e.target.closest('[data-vall]'); if (a) return act(a, () => api('POST', '/api/item-verify', { entry_id: +a.dataset.vall }), 'All verified');
+    const u = e.target.closest('[data-vundo]'); if (u && confirm('Untick every item of this job?')) return act(u, () => api('POST', '/api/item-verify', { entry_id: +u.dataset.vundo, undo: true }), 'Unticked');
+  };
+}
+
 // ---------- Daily Report (owners, manager): one row per person for a day ----------
 async function viewReport(m) {
   const day = filters.repDay || new Date().toLocaleDateString('en-CA');
@@ -953,21 +973,21 @@ async function viewReport(m) {
   const people = r.people.filter((p) => !dept || p.dept === dept);
   const sum = (k) => people.reduce((n, p) => n + (p[k] || 0), 0);
   const table = `<table><thead><tr><th>Person</th><th class="rs">Total items</th><th class="rs">% of items</th><th class="rs">Points</th><th class="rs">Speed</th>
-    <th class="rs">Sale goods checked</th><th class="rs">% checked</th><th class="rs">Racks set</th><th class="rs">Syrup set</th><th class="rs">Polythene packed</th>
+    <th class="rs">Sale goods checked</th><th class="rs">% checked</th><th class="rs">Racks set</th><th class="rs">Tube racks</th><th class="rs">Syrup set</th><th class="rs">Polythene packed</th>
     <th class="rs">Transport checked</th><th class="rs">Time not punched</th><th class="rs">Break</th><th>First – last punch</th></tr></thead><tbody>
     ${people.map((p) => `<tr><td><b>${esc(p.name)}</b>${dept ? '' : ` <small class="sub">${esc(p.dept)}</small>`}</td><td class="rs"><b>${n0(p.items)}</b></td><td class="rs">${n0(p.itemsPct, '%')}</td>
       <td class="rs">${p.points ? `<span class="late">${p.points}</span>` : '—'}</td><td class="rs">${p.speed ? `<span class="${p.speed < 2 ? 'late' : ''}">${p.speed}</span>` : '—'}</td>
-      <td class="rs">${n0(p.checked)}</td><td class="rs">${n0(p.checkedPct, '%')}</td><td class="rs">${n0(p.racks)}</td><td class="rs">${n0(p.syrup)}</td><td class="rs">${n0(p.packed)}</td>
+      <td class="rs">${n0(p.checked)}</td><td class="rs">${n0(p.checkedPct, '%')}</td><td class="rs">${n0(p.racks)}</td><td class="rs">${n0(p.tubes)}</td><td class="rs">${n0(p.syrup)}</td><td class="rs">${n0(p.packed)}</td>
       <td class="rs">${p.transport ? `${p.transport}× · ${hm(p.transportMin)}` : '—'}</td><td class="rs">${p.idleMin ? `<span class="${p.idleMin >= 30 ? 'late' : ''}">${hm(p.idleMin)}</span>` : '—'}</td>
       <td class="rs">${p.breakMin ? `<span class="${p.breakMin > 45 ? 'late' : ''}">${hm(p.breakMin)}</span>` : '—'}</td><td><small>${p.first ? `${fmtTime(p.first)} – ${fmtTime(p.last)}` : '—'}</small></td></tr>`).join('')}
     </tbody><tfoot><tr style="font-weight:700"><td>Total · ${people.length}</td><td class="rs">${sum('items') || '—'}</td><td></td><td class="rs">${sum('points') || '—'}</td><td></td><td class="rs">${sum('checked') || '—'}</td><td></td>
-      <td class="rs">${sum('racks') || '—'}</td><td class="rs">${sum('syrup') || '—'}</td><td class="rs">${sum('packed') || '—'}</td><td class="rs">${sum('transport') || '—'}</td><td class="rs">${hm(sum('idleMin'))}</td><td class="rs">${hm(sum('breakMin'))}</td><td></td></tr></tfoot></table>`;
+      <td class="rs">${sum('racks') || '—'}</td><td class="rs">${sum('tubes') || '—'}</td><td class="rs">${sum('syrup') || '—'}</td><td class="rs">${sum('packed') || '—'}</td><td class="rs">${sum('transport') || '—'}</td><td class="rs">${hm(sum('idleMin'))}</td><td class="rs">${hm(sum('breakMin'))}</td><td></td></tr></tfoot></table>`;
   m.innerHTML = `<section class="card"><div class="row" style="flex-wrap:wrap;gap:8px"><h2 class="grow" style="margin:0">Daily report · ${long}</h2>
       <input type="date" id="repday" value="${day}"><button class="btn green small" id="repprint">🖨 Print</button></div>
       <div class="row" style="flex-wrap:wrap;gap:6px;margin-top:10px">${['', ...DEPTS].map((d) => `<button class="btn small ${d === dept ? '' : 'ghost'}" data-dept="${d}">${d || 'All departments'} · ${d ? r.people.filter((p) => p.dept === d).length : r.people.length}</button>`).join('')}</div></section>
     <section class="card">${people.length ? `<div class="scroll">${table}</div>` : '<p class="empty">No punches on this day.</p>'}
     <p class="sub" style="margin:10px 0 0">Speed = items per minute while Preparing (bills done together count as one batch). Checked items are split in half when two people check together.
-      Racks set = Rack Setting (L), Syrup set = Syrup cases (O), Polythene packed = bills marked Packed now, Transport checked = Transport check (P) times.
+      Racks set = Rack Setting (L), Tube racks = Tube rack setting (Q), Syrup set = Syrup cases (O), Polythene packed = bills marked Packed now, Transport checked = Transport check (P) times.
       Time not punched = gaps between the first and last punch with no bill or work running. Break = Break (T) time. Red: speed below 2, 30+ minutes not punched, break over 45 minutes.</p></section>`;
   $('#repday').onchange = (e) => { filters.repDay = e.target.value; loadTab(); };
   m.querySelectorAll('[data-dept]').forEach((b) => { b.onclick = () => { filters.repDept = b.dataset.dept; loadTab(); }; });

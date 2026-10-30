@@ -337,6 +337,12 @@ migrate('2026-10-30-rack-numbers', () => {
     CREATE INDEX rack_sets_entry ON rack_sets(entry_id);`);
 });
 
+// Arun / owners verify each rack, tube rack and syrup case one by one (owner, 2026-10-30).
+migrate('2026-10-30-item-verify', () => {
+  db.exec(`ALTER TABLE rack_sets ADD COLUMN verified_by INTEGER REFERENCES users(id); ALTER TABLE rack_sets ADD COLUMN verified_at TEXT;
+    ALTER TABLE syrup_cases ADD COLUMN verified_by INTEGER REFERENCES users(id); ALTER TABLE syrup_cases ADD COLUMN verified_at TEXT;`);
+});
+
 // ---------- helpers ----------
 // Adds .cases (syrup case name + rack) to work rows of the Syrup cases task.
 function withCases(rows) {
@@ -344,14 +350,15 @@ function withCases(rows) {
   const ids = rows.filter((r) => r.task_code === 'O').map((r) => r.id);
   if (!ids.length) return rows;
   const by = {};
-  for (const c of db.prepare(`SELECT id, entry_id, case_name, rack_no, at FROM syrup_cases WHERE entry_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`).all(...ids)) (by[c.entry_id] ||= []).push(c);
+  for (const c of db.prepare(`SELECT id, entry_id, case_name, rack_no, at, verified_at FROM syrup_cases WHERE entry_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`).all(...ids)) (by[c.entry_id] ||= []).push(c);
   for (const r of rows) if (r.task_code === 'O') r.cases = by[r.id] || [];
   return rows;
 }
 // Adds .racks (rack numbers) to work rows of the Rack Setting task.
-const rackList = (entryId) => db.prepare('SELECT id, rack_no FROM rack_sets WHERE entry_id = ? ORDER BY id').all(entryId);
+const RACK_TASKS = ['L', 'Q']; // Rack Setting, Tube rack setting
+const rackList = (entryId) => db.prepare('SELECT id, rack_no, verified_at FROM rack_sets WHERE entry_id = ? ORDER BY id').all(entryId);
 function withRacks(rows) {
-  for (const r of rows) if (r.task_code === 'L') r.racks = rackList(r.id);
+  for (const r of rows) if (RACK_TASKS.includes(r.task_code)) r.racks = rackList(r.id);
   return rows;
 }
 // Incentive per IST day between from and to (see GET /api/incentive for the rules).
@@ -410,7 +417,7 @@ function dailyReport(date) {
   const inc = incentiveDays(from, to)[0] || { preppers: [], checkers: [], checked: 0 };
   const people = {};
   const depts = Object.fromEntries(db.prepare('SELECT name, dept FROM users').all().map((x) => [x.name, x.dept || 'Other']));
-  const get = (n) => (people[n] ||= { name: n, dept: depts[n] || 'Other', items: 0, itemsPct: 0, points: 0, speed: 0, checked: 0, checkedPct: 0, racks: 0, syrup: 0, packed: 0, transport: 0, transportMin: 0, breakMin: 0, idleMin: 0, workMin: 0, first: null, last: null });
+  const get = (n) => (people[n] ||= { name: n, dept: depts[n] || 'Other', items: 0, itemsPct: 0, points: 0, speed: 0, checked: 0, checkedPct: 0, racks: 0, tubes: 0, syrup: 0, packed: 0, transport: 0, transportMin: 0, breakMin: 0, idleMin: 0, workMin: 0, first: null, last: null });
   const totalPrep = inc.preppers.reduce((n, p) => n + p.items, 0);
   for (const p of inc.preppers) Object.assign(get(p.name), { items: p.items, itemsPct: totalPrep ? +(p.items / totalPrep * 100).toFixed(1) : 0, points: p.points, speed: p.speed });
   for (const c of inc.checkers) Object.assign(get(c.name), { checked: c.items, checkedPct: c.pct });
@@ -424,6 +431,7 @@ function dailyReport(date) {
     const min = Math.max(0, (Date.parse(end) - Date.parse(r.start_at)) / 60000);
     if (!r.bill_id && r.task_code === 'L') p.racks += r.qty || 0;
     if (!r.bill_id && r.task_code === 'O') p.syrup += r.qty || 0;
+    if (!r.bill_id && r.task_code === 'Q') p.tubes += r.qty || 0;
     if (!r.bill_id && r.task_code === 'P') { p.transport++; p.transportMin += min; }
     if (!r.bill_id && r.task_code === 'T') p.breakMin += min;
     (spans[r.name] ||= []).push([Date.parse(r.start_at), Date.parse(end)]);
@@ -885,8 +893,8 @@ const routes = {
   // Rack Setting: add rack numbers (one or many: "1, 5, 615") or remove one; returns the task's whole list.
   'POST /api/racks': async (req, res, u) => {
     const { entry_id, racks, remove } = await readBody(req);
-    const e = db.prepare("SELECT * FROM entries WHERE id = ? AND task_code = 'L' AND bill_id IS NULL").get(entry_id);
-    if (!e) fail(404, 'Rack Setting task not found');
+    const e = db.prepare(`SELECT * FROM entries WHERE id = ? AND task_code IN ('L', 'Q') AND bill_id IS NULL`).get(entry_id);
+    if (!e) fail(404, 'Rack task not found');
     if (e.start_by !== u.id && !u.is_admin && !u.is_manager && !u.can_proxy) fail(403, 'Only the person doing this task can add racks');
     if (remove) db.prepare('DELETE FROM rack_sets WHERE id = ? AND entry_id = ?').run(remove, e.id);
     const have = new Set(rackList(e.id).map((r) => r.rack_no));
@@ -935,6 +943,36 @@ const routes = {
     send(res, 200, { ok: true });
   },
 
+  // Verify Items (Arun, owners): Rack Setting, Tube rack setting and Syrup cases jobs of the last 3 days with every rack / case.
+  'GET /api/item-verify': async (req, res, u) => {
+    if (!canReview(u)) fail(403, 'Not allowed');
+    const jobs = db.prepare(`SELECT e.id, e.task_code, e.start_at, e.end_at, e.verified_at, t.name AS task_name, su.name AS start_by_name, vu.name AS verified_by_name FROM entries e
+      JOIN tasks t ON t.code = e.task_code LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users vu ON vu.id = e.verified_by
+      WHERE e.bill_id IS NULL AND e.task_code IN ('L', 'Q', 'O') AND e.start_at >= ? ORDER BY e.start_at DESC`).all(new Date(Date.now() - 3 * 86400e3).toISOString());
+    withCases(jobs);
+    send(res, 200, jobs.filter((j) => (j.racks || j.cases || []).length));
+  },
+  // Verify (or undo) one rack / case, or every item of a job. When all items of a finished job are verified, the job is verified too.
+  'POST /api/item-verify': async (req, res, u) => {
+    if (!canReview(u)) fail(403, 'Not allowed');
+    const { kind, id, entry_id, undo } = await readBody(req);
+    const t = undo ? null : now(), by = undo ? null : u.id;
+    let entry = entry_id;
+    if (kind === 'rack' || kind === 'case') {
+      const table = kind === 'rack' ? 'rack_sets' : 'syrup_cases';
+      const row = db.prepare(`SELECT entry_id FROM ${table} WHERE id = ?`).get(id);
+      if (!row) fail(404, 'Not found');
+      db.prepare(`UPDATE ${table} SET verified_by = ?, verified_at = ? WHERE id = ?`).run(by, t, id);
+      entry = row.entry_id;
+    } else {
+      db.prepare('UPDATE rack_sets SET verified_by = ?, verified_at = ? WHERE entry_id = ? AND (verified_at IS NULL OR ?)').run(by, t, entry, undo ? 1 : 0);
+      db.prepare('UPDATE syrup_cases SET verified_by = ?, verified_at = ? WHERE entry_id = ? AND (verified_at IS NULL OR ?)').run(by, t, entry, undo ? 1 : 0);
+    }
+    const left = db.prepare('SELECT (SELECT COUNT(*) FROM rack_sets WHERE entry_id = ?1 AND verified_at IS NULL) + (SELECT COUNT(*) FROM syrup_cases WHERE entry_id = ?1 AND verified_at IS NULL) AS n').get(entry).n;
+    if (!left) db.prepare('UPDATE entries SET verified_by = ?, verified_at = ? WHERE id = ? AND end_at IS NOT NULL AND verified_at IS NULL').run(u.id, now(), entry);
+    else db.prepare('UPDATE entries SET verified_by = NULL, verified_at = NULL WHERE id = ?').run(entry);
+    send(res, 200, { ok: true, left });
+  },
   // Jobs this person may verify (e.g. VICKY: H), last 7 days, waiting ones first.
   'GET /api/verify-list': async (req, res, u) => {
     const codes = (u.verify_codes || '').split(',').filter(Boolean);
