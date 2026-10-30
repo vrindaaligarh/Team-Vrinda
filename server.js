@@ -415,13 +415,13 @@ function withCases(rows) {
   const ids = rows.filter((r) => r.task_code === 'O').map((r) => r.id);
   if (!ids.length) return rows;
   const by = {};
-  for (const c of db.prepare(`SELECT id, entry_id, case_name, rack_no, at, verified_at FROM syrup_cases WHERE entry_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`).all(...ids)) (by[c.entry_id] ||= []).push(c);
+  for (const c of db.prepare(`SELECT id, entry_id, case_name, rack_no, at, verified_at FROM syrup_cases WHERE entry_id IN (${ids.map(() => '?').join(',')}) ORDER BY CAST(rack_no AS INTEGER), rack_no, id`).all(...ids)) (by[c.entry_id] ||= []).push(c);
   for (const r of rows) if (r.task_code === 'O') r.cases = by[r.id] || [];
   return rows;
 }
-// Adds .racks (rack numbers) to work rows of the Rack Setting task.
+// Adds .racks (rack numbers, lowest first) to work rows of the Rack Setting task.
 const RACK_TASKS = ['L', 'Q']; // Rack Setting, Tube rack setting
-const rackList = (entryId) => db.prepare('SELECT id, rack_no, verified_at FROM rack_sets WHERE entry_id = ? ORDER BY id').all(entryId);
+const rackList = (entryId) => db.prepare('SELECT id, rack_no, verified_at FROM rack_sets WHERE entry_id = ? ORDER BY CAST(rack_no AS INTEGER), rack_no').all(entryId);
 function withRacks(rows) {
   for (const r of rows) if (RACK_TASKS.includes(r.task_code)) r.racks = rackList(r.id);
   return rows;
