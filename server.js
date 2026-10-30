@@ -344,12 +344,13 @@ function incentiveDays(from, to) {
   }
   const out = Object.values(days).sort((a, b) => b.date.localeCompare(a.date)).map((d) => {
     const preppers = Object.values(d.preppers).map((p) => {
-      for (const b of p.batches) { const min = Math.max(1, (Date.parse(b.end_at) - Date.parse(b.start_at)) / 60000); for (const x of b.bills) x.speed = +(b.items / min).toFixed(2); }
+      let minutes = 0;
+      for (const b of p.batches) { const min = Math.max(1, (Date.parse(b.end_at) - Date.parse(b.start_at)) / 60000); minutes += min; for (const x of b.bills) x.speed = +(b.items / min).toFixed(2); }
       const adjusted = p.items - 10 * p.points;
       const dayReward = adjusted > 1100 ? 100 : adjusted > 700 ? 50 : 0;
       const speedBills = p.bills.filter((b) => b.items >= 50).map((b) => ({ bill_no: b.bill_no, items: b.items, speed: b.speed, reward: b.speed > 4.5 ? 20 : b.speed > 3.25 ? 10 : 0 }));
       const speedReward = speedBills.reduce((n, b) => n + b.reward, 0);
-      return { name: p.name, items: p.items, points: p.points, adjusted, bills: p.bills.length, dayReward, speedBills, speedReward, total: dayReward + speedReward };
+      return { name: p.name, items: p.items, points: p.points, adjusted, bills: p.bills.length, minutes: Math.round(minutes), speed: +(p.items / minutes).toFixed(2), dayReward, speedBills, speedReward, total: dayReward + speedReward };
     }).sort((a, b) => b.total - a.total || b.adjusted - a.adjusted);
     const checkers = Object.values(d.checkers).map((c) => {
       const pct = d.checked ? (c.items / d.checked) * 100 : 0;
@@ -358,6 +359,45 @@ function incentiveDays(from, to) {
     return { date: d.date, checked: d.checked, preppers, checkers };
   });
   return out;
+}
+// Daily report for one IST day (owner, 2026-10-30): per person Preparing items, share, points, speed, Checking items and share,
+// racks set (L), syrup cases set (O), bills polythene packed (PK), transport checks (P), break time (T),
+// and time not punched = gaps between their first punch and last punch that no bill step or work task covers.
+function dailyReport(date) {
+  const from = new Date(date + 'T00:00:00+05:30').toISOString(), to = new Date(Date.parse(from) + 86400e3).toISOString();
+  const inc = incentiveDays(from, to)[0] || { preppers: [], checkers: [], checked: 0 };
+  const people = {};
+  const get = (n) => (people[n] ||= { name: n, items: 0, itemsPct: 0, points: 0, speed: 0, checked: 0, checkedPct: 0, racks: 0, syrup: 0, packed: 0, transport: 0, transportMin: 0, breakMin: 0, idleMin: 0, workMin: 0, first: null, last: null });
+  const totalPrep = inc.preppers.reduce((n, p) => n + p.items, 0);
+  for (const p of inc.preppers) Object.assign(get(p.name), { items: p.items, itemsPct: totalPrep ? +(p.items / totalPrep * 100).toFixed(1) : 0, points: p.points, speed: p.speed });
+  for (const c of inc.checkers) Object.assign(get(c.name), { checked: c.items, checkedPct: c.pct });
+  const nowIso = new Date().toISOString();
+  const rows = db.prepare(`SELECT x.name, e.task_code, e.start_at, e.end_at, e.qty, e.bill_id, e.note FROM entries e JOIN users x ON x.id IN (e.start_by, e.partner_by)
+    WHERE e.start_at IS NOT NULL AND e.start_at >= ? AND e.start_at < ? AND x.is_admin = 0 ORDER BY x.name, e.start_at`).all(from, to);
+  const spans = {};
+  for (const r of rows) {
+    if (r.note === 'All done') continue;
+    const p = get(r.name), end = r.end_at || (nowIso < to ? nowIso : to);
+    const min = Math.max(0, (Date.parse(end) - Date.parse(r.start_at)) / 60000);
+    if (!r.bill_id && r.task_code === 'L') p.racks += r.qty || 0;
+    if (!r.bill_id && r.task_code === 'O') p.syrup += r.qty || 0;
+    if (!r.bill_id && r.task_code === 'P') { p.transport++; p.transportMin += min; }
+    if (!r.bill_id && r.task_code === 'T') p.breakMin += min;
+    (spans[r.name] ||= []).push([Date.parse(r.start_at), Date.parse(end)]);
+  }
+  // Polythene packing: the single "Packed now" tap on a bill (PK), counted by who pressed it.
+  for (const r of db.prepare(`SELECT x.name, COUNT(*) AS n FROM entries e JOIN users x ON x.id = e.end_by
+    WHERE e.task_code = 'PK' AND e.end_at >= ? AND e.end_at < ? AND (e.note IS NULL OR e.note != 'All done') AND x.is_admin = 0 GROUP BY x.name`).all(from, to)) get(r.name).packed = r.n;
+  for (const [name, list] of Object.entries(spans)) {
+    list.sort((a, b) => a[0] - b[0]);
+    let covered = 0, curS = null, curE = null;
+    for (const [s0, e0] of list) { if (curE === null || s0 > curE) { if (curE !== null) covered += curE - curS; curS = s0; curE = e0; } else if (e0 > curE) curE = e0; }
+    if (curE !== null) covered += curE - curS;
+    const p = get(name), first = list[0][0], last = Math.max(...list.map((x) => x[1]));
+    Object.assign(p, { first: new Date(first).toISOString(), last: new Date(last).toISOString(), workMin: Math.round((last - first) / 60000), idleMin: Math.round((last - first - covered) / 60000) });
+  }
+  for (const p of Object.values(people)) { p.breakMin = Math.round(p.breakMin); p.transportMin = Math.round(p.transportMin); p.checked = Math.round(p.checked); }
+  return { date, totalPrep, totalChecked: inc.checked, people: Object.values(people).sort((a, b) => b.items - a.items || b.checked - a.checked || a.name.localeCompare(b.name)) };
 }
 // Who earned money on one day: [{ name, items, speed, check, total }], biggest first.
 function incentiveEarners(d) {
@@ -699,6 +739,11 @@ const routes = {
   'GET /api/incentive': async (req, res, u, q) => {
     if (!u.is_admin && !u.is_manager) fail(403, 'Not allowed');
     send(res, 200, incentiveDays(q.get('from') || new Date(Date.now() - 86400e3).toISOString(), q.get('to') || '9999'));
+  },
+  'GET /api/daily-report': async (req, res, u, q) => {
+    if (!u.is_admin && !u.is_manager) fail(403, 'Not allowed');
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(q.get('date') || '') ? q.get('date') : new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+    send(res, 200, dailyReport(date));
   },
   // Owners: email one day's incentive sheet now (same as the 11 AM daily mail).
   'POST /api/incentive/email': async (req, res, u) => {
