@@ -939,14 +939,17 @@ async function viewIncentive(m) {
   const mode = filters.incMode || 'day', dayStr = filters.incDay || today, monStr = filters.incMonth || today.slice(0, 7);
   let range;
   if (mode === 'day') range = dayRange(dayStr);
-  else { const f = new Date(monStr + '-01T00:00:00'), t = new Date(f); t.setMonth(t.getMonth() + 1); range = { from: f.toISOString(), to: t.toISOString() }; }
+  else if (mode === 'month') { const f = new Date(monStr + '-01T00:00:00'), t = new Date(f); t.setMonth(t.getMonth() + 1); range = { from: f.toISOString(), to: t.toISOString() }; }
+  else { const a = filters.incFrom || today, z = filters.incTo && filters.incTo >= a ? filters.incTo : a; range = { from: dayRange(a).from, to: dayRange(z).to }; }
+  const fromStr = filters.incFrom || today, toStr = filters.incTo && filters.incTo >= fromStr ? filters.incTo : fromStr;
   const days = await api('GET', '/api/incentive?' + new URLSearchParams(range));
   const rs = (n) => n ? `<b>₹${n}</b>` : '<span class="sub">—</span>';
   const stat = (n, label) => `<div class="stat"><b>${n}</b><span>${label}</span></div>`;
   const fmtDay = (x) => new Date(x + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
   const controls = `<section class="card"><div class="row" style="flex-wrap:wrap;gap:8px"><h2 class="grow" style="margin:0">Incentive</h2>
-    <button class="btn small ${mode === 'day' ? '' : 'ghost'}" data-mode="day">Day</button><button class="btn small ${mode === 'month' ? '' : 'ghost'}" data-mode="month">Month</button>
-    ${mode === 'day' ? `<input type="date" id="incday" value="${dayStr}">` : `<input type="month" id="incmon" value="${monStr}">`}<button class="btn green small" id="incprint">🖨 Print</button></div></section>`;
+    <button class="btn small ${mode === 'day' ? '' : 'ghost'}" data-mode="day">Day</button><button class="btn small ${mode === 'month' ? '' : 'ghost'}" data-mode="month">Month</button><button class="btn small ${mode === 'range' ? '' : 'ghost'}" data-mode="range">From – to</button>
+    ${mode === 'day' ? `<input type="date" id="incday" value="${dayStr}">` : mode === 'month' ? `<input type="month" id="incmon" value="${monStr}">`
+      : `<input type="date" id="incfrom" value="${fromStr}"> to <input type="date" id="incto" value="${toStr}" min="${fromStr}">`}<button class="btn green small" id="incprint">🖨 Print</button></div></section>`;
   let body, earners = [], title;
   if (mode === 'day') {
     const d = days[0] || { preppers: [], checkers: [], checked: 0 };
@@ -976,10 +979,11 @@ async function viewIncentive(m) {
     }
     const list = Object.values(people).map((r) => ({ ...r, total: r.items + r.speed + r.check })).filter((r) => r.total).sort((a, b) => b.total - a.total);
     const sum = list.reduce((n, r) => n + r.total, 0);
-    earners = list; title = 'Monthly incentive · ' + new Date(monStr + '-01T00:00:00').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+    const long = (x) => new Date(x + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+    earners = list; title = mode === 'month' ? 'Monthly incentive · ' + new Date(monStr + '-01T00:00:00').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) : `Incentive · ${long(fromStr)} to ${long(toStr)}`;
     body = `<div class="stats" style="margin-bottom:12px">${stat('₹' + sum, 'Total incentive')}${stat(list.length, 'Employees earning')}${stat(days.length, 'Working days')}</div>
-      <section class="card"><h2>Month total by employee</h2>${list.length ? `<div class="scroll"><table><tr><th>Employee</th><th class="rs">Items reward</th><th class="rs">Speed bonus</th><th class="rs">Checking reward</th><th class="rs">Days earned</th><th class="rs">Total</th></tr>
-      ${list.map((r) => `<tr><td><b>${esc(r.name)}</b></td><td class="rs">${rs(r.items)}</td><td class="rs">${rs(r.speed)}</td><td class="rs">${rs(r.check)}</td><td class="rs">${r.days.size}</td><td class="rs">${rs(r.total)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No incentive earned this month yet.</p>'}</section>
+      <section class="card"><h2>${mode === 'month' ? 'Month' : 'Period'} total by employee</h2>${list.length ? `<div class="scroll"><table><tr><th>Employee</th><th class="rs">Items reward</th><th class="rs">Speed bonus</th><th class="rs">Checking reward</th><th class="rs">Days earned</th><th class="rs">Total</th></tr>
+      ${list.map((r) => `<tr><td><b>${esc(r.name)}</b></td><td class="rs">${rs(r.items)}</td><td class="rs">${rs(r.speed)}</td><td class="rs">${rs(r.check)}</td><td class="rs">${r.days.size}</td><td class="rs">${rs(r.total)}</td></tr>`).join('')}</table></div>` : `<p class="empty">No incentive earned ${mode === 'month' ? 'this month' : 'in these dates'} yet.</p>`}</section>
       <section class="card"><h2>Day by day</h2><div class="scroll"><table><tr><th>Date</th><th class="rs">Items prepared</th><th class="rs">Items checked</th><th class="rs">Incentive</th></tr>
       ${days.map((d) => `<tr data-incday="${d.date}" style="cursor:pointer"><td><b>${fmtDay(d.date)}</b></td><td class="rs">${d.preppers.reduce((n, p) => n + p.items, 0)}</td><td class="rs">${d.checked}</td>
         <td class="rs">${rs(d.preppers.reduce((n, p) => n + p.total, 0) + d.checkers.reduce((n, c) => n + c.reward, 0))}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No days yet.</td></tr>'}</table></div><p class="sub" style="margin:8px 0 0">Tap a day to open it.</p></section>`;
@@ -994,6 +998,8 @@ async function viewIncentive(m) {
   $('#incprint').onclick = () => printIncentive(title, earners);
   if ($('#incday')) $('#incday').onchange = (e) => { filters.incDay = e.target.value; loadTab(); };
   if ($('#incmon')) $('#incmon').onchange = (e) => { filters.incMonth = e.target.value; loadTab(); };
+  if ($('#incfrom')) $('#incfrom').onchange = (e) => { filters.incFrom = e.target.value; loadTab(); };
+  if ($('#incto')) $('#incto').onchange = (e) => { filters.incTo = e.target.value; loadTab(); };
   m.querySelectorAll('[data-incday]').forEach((tr) => { tr.onclick = () => { filters.incMode = 'day'; filters.incDay = tr.dataset.incday; loadTab(); }; });
 }
 
