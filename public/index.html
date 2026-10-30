@@ -259,7 +259,7 @@ async function loadTab() {
 }
 
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810.
-const padBillNo = (no) => no.replace(/^(\d{5})$/, (m, d) => (Number(d) < 50000 ? 'R0' : 'T0') + d).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
+const padBillNo = (no) => no.replace(/^\d{1,5}$/, (d) => (Number(d) < 1 ? d : Number(d) < 15000 ? 'CA' + d.padStart(6, '0') : d.length === 5 ? (Number(d) < 50000 ? 'R0' : 'T0') + d : d)).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
 
 // Tasks like L Rack Setting and O Syrup Cases can record a count when ended. Optional: blank or Cancel ends without one.
 function askQty(label) {
@@ -361,7 +361,7 @@ async function viewOther(m) {
   m.querySelectorAll('form.newbill').forEach((f) => f.onsubmit = (e) => {
     e.preventDefault();
     const no = padBillNo(f.no.value.trim().toUpperCase());
-    if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Type the 5 digits (50810), a full bill no. like T050810, or a challan no. like CA007536', true);
+    if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Type the digits (50810, or 7656 for challan CA007656), a full bill no. like T050810, or a challan no. like CA007536', true);
     const items = Number(f.items.value);
     if (!Number.isInteger(items) || items < 1) return toast('Type the number of items', true);
     const extra = prevQty(); if (!extra) return;
@@ -708,7 +708,7 @@ async function viewPrep(m) {
   f.onsubmit = (e) => {
     e.preventDefault();
     const no = padBillNo(f.no.value.trim().toUpperCase()), items = Number(f.items.value);
-    if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Type the 5 digits (50810), a full bill no. like T050810, or a challan no. like CA007536', true);
+    if (!/^([TR]\d{6}|[A-Z]{2}\d{6})$/.test(no)) return toast('Type the digits (50810, or 7656 for challan CA007656), a full bill no. like T050810, or a challan no. like CA007536', true);
     if (!Number.isInteger(items) || items < 1) return toast('Type the number of items', true);
     const who = staff.find((x) => x.id === +f.who.value);
     act(f.querySelector('button'), () => apiFor(who.id, 'POST', '/api/bills', { bill_no: no, items }), `${no} started for ${who.name}`);
@@ -754,7 +754,7 @@ async function viewQuick(m) {
     <section class="card"><form id="qkform" class="qk-form" autocomplete="off">
       <h2 style="margin:0">2 · Bill and items</h2>
       <div class="qk-who" id="qkwho"></div>
-      <div class="qk-field"><label>Bill no. (last 5 digits)</label><input name="no" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="5" placeholder="50810" enterkeyhint="next"><div class="qk-prev" id="qkprev"></div></div>
+      <div class="qk-field"><label>Bill no. (digits only · below 15000 = challan CA)</label><input name="no" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="5" placeholder="50810" enterkeyhint="next"><div class="qk-prev" id="qkprev"></div></div>
       <div class="qk-field"><label>Items</label><input name="items" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="0" enterkeyhint="go"></div>
       <button class="qk-go">Start preparing ▶</button>
       <div id="qkdone"></div>
@@ -774,10 +774,12 @@ async function viewQuick(m) {
   const digits = (el) => { el.value = el.value.replace(/\D/g, ''); };
   f.no.oninput = () => {
     digits(f.no);
-    $('#qkprev').textContent = f.no.value.length === 5 ? '→ ' + padBillNo(f.no.value) : '';
+    const full = padBillNo(f.no.value);
+    $('#qkprev').textContent = full !== f.no.value ? '→ ' + full : '';
     if (f.no.value.length === 5) f.items.focus();
   };
   f.items.oninput = () => digits(f.items);
+  f.no.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); f.items.focus(); } };
   // Picking a name focuses the bill box straight away, so the number keypad opens.
   const pick = (id) => { state.quickWho = id; $('#qkdone').innerHTML = ''; showWho(); f.no.focus(); };
   if ($('#qkother')) $('#qkother').onchange = (e) => e.target.value && pick(+e.target.value);
@@ -785,7 +787,7 @@ async function viewQuick(m) {
     e.preventDefault();
     const w = whoNow();
     if (!w) return toast('Tap a name first', true);
-    if (f.no.value.length !== 5) { toast('Type the 5 digits of the bill no.', true); return f.no.focus(); }
+    if (padBillNo(f.no.value) === f.no.value) { toast('Type the bill no.: 5 digits, or below 15000 for a challan', true); return f.no.focus(); }
     const items = Number(f.items.value);
     if (!items) { toast('Type the number of items', true); return f.items.focus(); }
     const no = padBillNo(f.no.value), btn = f.querySelector('.qk-go');

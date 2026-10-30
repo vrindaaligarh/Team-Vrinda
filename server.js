@@ -358,8 +358,9 @@ function startingBill(u, prevQty, code) {
 const MANUAL_END = ['M'];
 // Bill: T or R + 6 digits (T050810). Challan: 2 letters + 6 digits (CA007536).
 const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
-// Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Exactly 5 digits: below 50000 is an R bill (12345 -> R012345), 50000 and up a T bill (50810 -> T050810).
-const padBillNo = (no) => no.replace(/^(\d{5})$/, (m, d) => (Number(d) < 50000 ? 'R0' : 'T0') + d).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
+// Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Digits only: below 15000 is a challan (7656 -> CA007656),
+// otherwise 5 digits: below 50000 an R bill (15345 -> R015345), 50000 and up a T bill (50810 -> T050810).
+const padBillNo = (no) => no.replace(/^\d{1,5}$/, (d) => (Number(d) < 1 ? d : Number(d) < 15000 ? 'CA' + d.padStart(6, '0') : d.length === 5 ? (Number(d) < 50000 ? 'R0' : 'T0') + d : d)).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
 const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_prep: !!u.can_prep, can_alldone: !!u.can_alldone, verify_codes: (u.verify_codes || '').split(',').filter(Boolean), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
@@ -482,7 +483,7 @@ const routes = {
     if (!canDo(u, first.code)) fail(403, 'Not allowed');
     const body = await readBody(req);
     const billNo = padBillNo(String(body.bill_no || '').trim().toUpperCase());
-    if (!BILL_NO.test(billNo)) fail(400, 'Type the 5 digits (50810), a full bill no. like T050810, or a challan no. like CA007536');
+    if (!BILL_NO.test(billNo)) fail(400, 'Type the digits (50810, or 7656 for challan CA007656), a full bill no. like T050810, or a challan no. like CA007536');
     if (db.prepare('SELECT 1 FROM bills WHERE bill_no = ?').get(billNo)) fail(400, `Bill ${billNo} already exists`);
     const items = Number(body.items);
     if (!Number.isInteger(items) || items < 1 || items > 9999) fail(400, 'Type the number of items');
@@ -515,7 +516,7 @@ const routes = {
       if (bill.stages[st[1].code]) fail(400, 'Checking has started. Ask the manager to change it.');
     }
     const billNo = padBillNo(String(body.bill_no || '').trim().toUpperCase());
-    if (!BILL_NO.test(billNo)) fail(400, 'Type the 5 digits (50810), a full bill no. like T050810, or a challan no. like CA007536');
+    if (!BILL_NO.test(billNo)) fail(400, 'Type the digits (50810, or 7656 for challan CA007656), a full bill no. like T050810, or a challan no. like CA007536');
     if (db.prepare('SELECT 1 FROM bills WHERE bill_no = ? AND id != ?').get(billNo, bill.id)) fail(400, `Bill ${billNo} already exists`);
     const items = Number(body.items);
     if (!Number.isInteger(items) || items < 1 || items > 9999) fail(400, 'Type the number of items');
