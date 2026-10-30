@@ -289,6 +289,12 @@ migrate('2026-10-28-owais-left', () => {
 // Owner, 2026-10-28: checkers give each bill 1-20 points in Checking.
 migrate('2026-10-28-check-points', () => { db.exec('ALTER TABLE entries ADD COLUMN points INTEGER'); });
 
+// Owner, 2026-10-30: FARAZ gets the simple mobile Preparing Entry (start/end Preparing for the sale items team), nothing else.
+migrate('2026-10-30-faraz-prep-entry', () => {
+  db.exec('ALTER TABLE users ADD COLUMN can_prep INTEGER NOT NULL DEFAULT 0');
+  db.prepare("UPDATE users SET can_prep = 1 WHERE username = 'faraz'").run();
+});
+
 // ---------- helpers ----------
 const now = () => new Date().toISOString();
 const stages = () => db.prepare('SELECT * FROM tasks WHERE stage_order IS NOT NULL ORDER BY stage_order').all();
@@ -354,7 +360,7 @@ const MANUAL_END = ['M'];
 const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Exactly 5 digits: below 50000 is an R bill (12345 -> R012345), 50000 and up a T bill (50810 -> T050810).
 const padBillNo = (no) => no.replace(/^(\d{5})$/, (m, d) => (Number(d) < 50000 ? 'R0' : 'T0') + d).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
-const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_alldone: !!u.can_alldone, verify_codes: (u.verify_codes || '').split(',').filter(Boolean), active: !!u.active });
+const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_prep: !!u.can_prep, can_alldone: !!u.can_alldone, verify_codes: (u.verify_codes || '').split(',').filter(Boolean), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
 function billRows(where = '', params = []) {
@@ -523,7 +529,7 @@ const routes = {
   },
   // Preparing Entry tab (owners, MANSI, AFZAL, NEHA, RIYA): everyone who can prepare, and every bill being prepared now.
   'GET /api/preparing': async (req, res, u) => {
-    if (!u.can_proxy) fail(403, 'Not allowed');
+    if (!u.can_proxy && !u.can_prep) fail(403, 'Not allowed');
     const first = stages()[0];
     const staff = db.prepare('SELECT id, name, tasks FROM users WHERE active = 1 AND is_admin = 0 ORDER BY name').all()
       .filter((x) => userTasks(x).includes(first.code)).map(({ id, name }) => ({ id, name }));
@@ -532,7 +538,7 @@ const routes = {
     const busy = new Set(bills.map((b) => b.stages[first.code].start_by_name)), doing = {}, names = Object.fromEntries(db.prepare('SELECT code, name FROM tasks').all().map((t) => [t.code, t.name]));
     for (const [code, list] of Object.entries(liveOnTask())) for (const n of list) (doing[n] ||= []).push(names[code] || code);
     const free = PREP_TEAM.filter((n) => !busy.has(n)).map((n) => ({ name: n, doing: (doing[n] || []).join(', ') }));
-    send(res, 200, { staff, bills, free });
+    send(res, 200, { staff, bills, free, team: PREP_TEAM });
   },
   // All done: end the running step and record every step still missing, so the bill is Final Ready now.
   // Running steps end under the person doing them; missing steps are saved under whoever pressed, marked "All done".
@@ -601,7 +607,8 @@ const routes = {
     const { bill_id, task_code, action, prev_qty, partner_id } = await readBody(req);
     const task = db.prepare('SELECT * FROM tasks WHERE code = ? AND stage_order IS NOT NULL').get(task_code);
     if (!task) fail(400, 'Unknown stage');
-    const proxyEnd = action === 'end' && (u.can_proxy || u.is_manager) && !u.entered_by;
+    const prepDesk = u.can_prep && !u.entered_by && task_code === stages()[0].code;
+    const proxyEnd = action === 'end' && (u.can_proxy || u.is_manager || prepDesk) && !u.entered_by;
     if (!canDoStage(u, task.code) && !proxyEnd) fail(403, 'This stage is not in your login');
     const [bill] = billRows('WHERE b.id = ?', [bill_id]);
     if (!bill) fail(404, 'Bill not found');
@@ -632,9 +639,9 @@ const routes = {
     } else if (action === 'end') {
       if (task.kind !== 'startend') fail(400, 'This stage has one button only');
       if (!e || !e.start_at) fail(400, 'Press Start first');
-      if (task.code === stages()[0].code && e.start_by !== u.id && !u.is_admin && !u.can_proxy && !u.is_manager) fail(403, `Only ${e.start_by_name} can end this bill`);
+      if (task.code === stages()[0].code && e.start_by !== u.id && !u.is_admin && !u.can_proxy && !u.is_manager && !prepDesk) fail(403, `Only ${e.start_by_name} can end this bill`);
       // Ended by MANSI/AFZAL/owner for someone else: saved as the starter's end, entered by them.
-      const forOther = (u.can_proxy || u.is_manager) && !u.entered_by && e.start_by !== u.id && e.partner_by !== u.id;
+      const forOther = (u.can_proxy || u.is_manager || prepDesk) && !u.entered_by && e.start_by !== u.id && e.partner_by !== u.id;
       db.prepare('UPDATE entries SET end_at = ?, end_by = ?, entered_by = COALESCE(?, entered_by) WHERE id = ?').run(t, forOther ? e.start_by : u.id, forOther ? u.id : u.entered_by ?? null, e.id);
     } else if (action === 'done') {
       if (task.kind !== 'single') fail(400, 'This stage needs Start and End');
@@ -828,7 +835,8 @@ const server = http.createServer(async (req, res) => {
       const forId = Number(req.headers['x-for-user'] || 0);
       const proxyPaths = ['/api/me', '/api/queue', '/api/bills', '/api/stage', '/api/work', '/api/bills/edit', '/api/points'];
       if (forId && u && proxyPaths.includes(url.pathname)) {
-        if (!u.can_proxy) fail(403, 'Not allowed to enter work for others');
+        // FARAZ (can_prep) may only start Preparing bills for others.
+        if (!u.can_proxy && !(u.can_prep && req.method === 'POST' && url.pathname === '/api/bills')) fail(403, 'Not allowed to enter work for others');
         const t = db.prepare('SELECT * FROM users WHERE id = ? AND active = 1').get(forId);
         if (!t) fail(404, 'Employee not found');
         return await handler(req, res, { ...t, entered_by: u.id }, url.searchParams);

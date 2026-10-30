@@ -77,6 +77,32 @@
     .idlelist { position: static; max-height: none; order: -1; }
     .idlelist .idle-name { display: inline-block; border: 1px solid var(--line); border-radius: 99px; padding: 3px 10px; margin: 0 4px 4px 0; font-size: 13px; }
   }
+
+  /* Quick Preparing Entry (FARAZ, phone first) */
+  .qk h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  .qk-names { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+  .qk-name { border: 2px solid var(--line); background: var(--card); color: var(--text); border-radius: 14px; padding: 12px 6px; font: 700 15px system-ui; cursor: pointer; position: relative; }
+  .qk-name small { display: block; font-weight: 500; font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .qk-name.free small { color: var(--green); }
+  .qk-name.on { border-color: var(--primary); background: var(--primary); color: var(--primary-text); box-shadow: 0 4px 14px rgba(31,111,235,.35); }
+  .qk-name.on small { color: inherit; opacity: .85; }
+  .qk-form { display: grid; gap: 12px; }
+  .qk-who { font-size: 22px; font-weight: 800; }
+  .qk-field label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+  .qk-field input { width: 100%; box-sizing: border-box; font: 800 34px/1.1 ui-monospace, monospace; letter-spacing: .12em; text-align: center; padding: 14px 8px; border-radius: 14px; border: 2px solid var(--line); background: var(--bg); color: var(--text); }
+  .qk-field input::placeholder { color: var(--muted); opacity: .35; }
+  .qk-field input:focus { outline: none; border-color: var(--primary); background: var(--card); }
+  .qk-prev { text-align: center; font: 700 15px system-ui; color: var(--primary); min-height: 20px; margin-top: 4px; }
+  .qk-go { font: 800 20px system-ui; padding: 18px; border-radius: 16px; border: 0; background: var(--green); color: #fff; cursor: pointer; }
+  .qk-go:disabled { opacity: .45; }
+  .qk-done { text-align: center; font: 700 16px system-ui; color: var(--green); background: var(--green-bg); border-radius: 12px; padding: 10px; }
+  .qk-group { border-top: 1px solid var(--line); padding: 10px 0; }
+  .qk-group h3 { margin: 0 0 6px; font-size: 16px; display: flex; gap: 8px; align-items: baseline; }
+  .qk-group h3 small { font-weight: 500; color: var(--muted); font-size: 13px; }
+  .qk-bill { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+  .qk-bill b { font: 700 17px ui-monospace, monospace; }
+  .qk-bill .grow { flex: 1; font-size: 13px; color: var(--muted); }
+  .qk-bill .btn { padding: 10px 18px; font-size: 15px; }
   #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; display: none; z-index: 10; max-width: 90vw; }
   #updating { position: fixed; left: 0; right: 0; top: 0; background: #9a6700; color: #fff; padding: 12px 16px; text-align: center; font-weight: 600; z-index: 20; }
   #toast.err { background: var(--red); color: #fff; }
@@ -192,6 +218,7 @@ function tabs() {
   // Owners don't log their own jobs, so they don't get My Jobs.
   const t = state.me.is_admin ? [['other', 'Work']] : [['other', 'Work'], ['mine', 'My Jobs']];
   if (state.me.can_proxy) t.splice(1, 0, ['prep', 'Preparing Entry'], ['proxy', 'Enter for Staff']);
+  else if (state.me.can_prep) t.unshift(['quick', 'Preparing Entry']);
   if (state.me.is_manager) t.splice(1, 0, ['board', 'Live Board']);
   if (state.me.verify_codes.length && !state.me.is_admin && !state.me.is_manager) t.push(['verify', 'Verify Jobs']);
   if (state.me.is_admin || state.me.tasks.includes('FR')) t.push(['final', 'Final Verification']);
@@ -215,7 +242,7 @@ function render() {
   $('#lo').onclick = async () => { await api('POST', '/api/logout'); state.me = null; render(); };
   $('#pw').onclick = changePassword;
   loadTab();
-  if (['all', 'other', 'status', 'final', 'proxy', 'prep', 'board'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
+  if (['all', 'other', 'status', 'final', 'proxy', 'prep', 'quick', 'board'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus')) loadTab(); }, 15000);
 }
 async function changePassword() {
   const oldPassword = prompt('Current password'); if (oldPassword == null) return;
@@ -225,7 +252,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -701,6 +728,88 @@ async function viewPrep(m) {
   };
 }
 
+// ---------- Quick Preparing Entry (FARAZ): big name buttons, number keypad, one tap to start ----------
+// The form is drawn once; names and the running list refresh in place, so the keypad stays open between bills.
+async function viewQuick(m) {
+  let data = await api('GET', '/api/preparing');
+  const pr = (b) => b.stages.PR || {};
+  const sumItems = (l) => l.reduce((n, b) => n + (b.items || 0), 0);
+  const plural = (n) => `${n} bill${n > 1 ? 's' : ''}`;
+  const whoNow = () => data.staff.find((x) => x.id === state.quickWho);
+  const byName = () => { const o = {}; for (const b of data.bills) (o[pr(b).start_by_name] ||= []).push(b); return o; };
+  const namesHtml = () => {
+    const by = byName(), w = whoNow();
+    return data.team.map((n) => data.staff.find((x) => x.name === n)).filter(Boolean).map((x) => { const l = by[x.name] || [];
+      return `<button type="button" class="qk-name ${l.length ? '' : 'free'} ${w && w.id === x.id ? 'on' : ''}" data-q="${x.id}">${esc(x.name)}<small>${l.length ? `${plural(l.length)} · ${sumItems(l)} items` : 'Free'}</small></button>`; }).join('');
+  };
+  const listHtml = () => {
+    const groups = Object.entries(byName()).sort((a, b) => a[0].localeCompare(b[0]));
+    return `<h2>Being prepared now · ${plural(data.bills.length)} · ${sumItems(data.bills)} items</h2>` + (groups.map(([n, l]) => `<div class="qk-group"><h3>${esc(n)} <small>${plural(l.length)} · ${sumItems(l)} items</small></h3>
+      ${l.map((b) => `<div class="qk-bill"><b>${esc(b.bill_no)}</b><span class="grow">${b.items || '?'} items · ${fmtTime(pr(b).start_at)} · ${ago(pr(b).start_at)}</span><button class="btn amber" data-qend="${b.id}">End</button></div>`).join('')}</div>`).join('') || '<p class="empty">No bills being prepared.</p>');
+  };
+  const others = data.staff.filter((x) => !data.team.includes(x.name));
+  m.innerHTML = `<div class="qk">
+    <section class="card"><h2>1 · Who is preparing?</h2><div class="qk-names" id="qknames">${namesHtml()}</div>
+      ${others.length ? `<select id="qkother" style="width:100%;margin-top:10px"><option value="">Someone else…</option>${others.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>` : ''}</section>
+    <section class="card"><form id="qkform" class="qk-form" autocomplete="off">
+      <h2 style="margin:0">2 · Bill and items</h2>
+      <div class="qk-who" id="qkwho"></div>
+      <div class="qk-field"><label>Bill no. (last 5 digits)</label><input name="no" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="5" placeholder="50810" enterkeyhint="next"><div class="qk-prev" id="qkprev"></div></div>
+      <div class="qk-field"><label>Items</label><input name="items" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="0" enterkeyhint="go"></div>
+      <button class="qk-go">Start preparing ▶</button>
+      <div id="qkdone"></div>
+    </form></section>
+    <section class="card" id="qklist">${listHtml()}</section></div>`;
+  const f = $('#qkform');
+  const showWho = () => {
+    const w = whoNow();
+    $('#qkwho').innerHTML = w ? esc(w.name) : '<span class="sub">Tap a name above</span>';
+    f.querySelector('.qk-go').disabled = !w;
+    m.querySelectorAll('[data-q]').forEach((b) => b.classList.toggle('on', w && +b.dataset.q === w.id));
+    if ($('#qkother')) $('#qkother').value = w && !data.team.includes(w.name) ? w.id : '';
+  };
+  const refresh = async () => { data = await api('GET', '/api/preparing'); $('#qknames').innerHTML = namesHtml(); $('#qklist').innerHTML = listHtml(); showWho(); };
+  showWho();
+  if (state.quickDone) $('#qkdone').innerHTML = `<div class="qk-done">✓ ${esc(state.quickDone)}</div>`;
+  const digits = (el) => { el.value = el.value.replace(/\D/g, ''); };
+  f.no.oninput = () => {
+    digits(f.no);
+    $('#qkprev').textContent = f.no.value.length === 5 ? '→ ' + padBillNo(f.no.value) : '';
+    if (f.no.value.length === 5) f.items.focus();
+  };
+  f.items.oninput = () => digits(f.items);
+  // Picking a name focuses the bill box straight away, so the number keypad opens.
+  const pick = (id) => { state.quickWho = id; $('#qkdone').innerHTML = ''; showWho(); f.no.focus(); };
+  if ($('#qkother')) $('#qkother').onchange = (e) => e.target.value && pick(+e.target.value);
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const w = whoNow();
+    if (!w) return toast('Tap a name first', true);
+    if (f.no.value.length !== 5) { toast('Type the 5 digits of the bill no.', true); return f.no.focus(); }
+    const items = Number(f.items.value);
+    if (!items) { toast('Type the number of items', true); return f.items.focus(); }
+    const no = padBillNo(f.no.value), btn = f.querySelector('.qk-go');
+    // Ready for the next bill at once: clear and jump back to the bill box (keypad stays up).
+    f.no.value = ''; f.items.value = ''; $('#qkprev').textContent = ''; f.no.focus();
+    btn.disabled = true;
+    try {
+      await apiFor(w.id, 'POST', '/api/bills', { bill_no: no, items });
+      state.quickDone = `${no} · ${items} items started for ${w.name}`;
+      $('#qkdone').innerHTML = `<div class="qk-done">✓ ${esc(state.quickDone)}</div>`;
+      await refresh();
+    } catch (err) { toast(err.message, true); f.no.value = no.slice(-5); f.items.value = items; }
+    finally { btn.disabled = !whoNow(); }
+  };
+  m.onclick = async (e) => {
+    const q = e.target.closest('[data-q]'); if (q) return pick(+q.dataset.q);
+    const en = e.target.closest('button[data-qend]');
+    if (!en) return;
+    en.disabled = true;
+    try { await api('POST', '/api/stage', { bill_id: +en.dataset.qend, task_code: 'PR', action: 'end' }); toast('Ended at ' + fmtTime(new Date().toISOString())); await refresh(); }
+    catch (err) { toast(err.message, true); en.disabled = false; }
+  };
+}
+
 // ---------- Enter for staff: press work buttons for someone who forgot their phone ----------
 async function viewProxy(m) {
   const staff = await api('GET', '/api/proxy-staff');
@@ -834,7 +943,7 @@ async function viewCodes(m) {
 }
 
 async function boot() {
-  try { const r = await api('GET', '/api/me'); state.me = r.user; state.tasks = r.tasks; state.tab = r.user.is_admin || r.user.is_manager ? 'all' : 'other'; }
+  try { const r = await api('GET', '/api/me'); state.me = r.user; state.tasks = r.tasks; state.tab = r.user.is_admin || r.user.is_manager ? 'all' : !r.user.can_proxy && r.user.can_prep ? 'quick' : 'other'; }
   catch { state.me = null; }
   render();
 }
