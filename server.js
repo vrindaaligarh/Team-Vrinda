@@ -1140,7 +1140,10 @@ const routes = {
     withCases(rows);
     // Only the owners (admin, ajanta) see who is not on any work.
     const idle = u.is_admin && !u.entered_by ? idleNames() : null;
-    send(res, 200, { rows, busy: busyBill(u), busyAll: busyBills(u), onTask: liveOnTask(), idle });
+    // Who is on which task: only the owners, SONU, VICKY and ARUN see the names (owner, 2026-10-31). Others see the work buttons only.
+    const viewer = u.entered_by ? db.prepare('SELECT * FROM users WHERE id = ?').get(u.entered_by) || u : u;
+    const seeWho = !!viewer.is_admin || ['sonu', 'vicky', 'arun'].includes(viewer.username);
+    send(res, 200, { rows, busy: busyBill(u), busyAll: busyBills(u), onTask: seeWho ? liveOnTask() : {}, idle });
   },
   // Syrup cases: add or remove one case (name + rack no.) on a running Syrup cases task.
   'POST /api/syrup': async (req, res, u) => {
