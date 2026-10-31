@@ -1884,7 +1884,7 @@ function shopEntryHtml(date, row, names, locked) {
       <input name="n2" class="grow" list="shopnames" placeholder="${title.replace('Shop ', '').replace(' by', '')} by 2" value="${esc(n[1])}" autocapitalize="characters" autocomplete="off" style="text-transform:uppercase"></div>
       <div class="row"><button class="btn ${ph === 'opening' ? 'green' : ''}">${btn}</button>
       <span class="sub" style="margin:0">${p.names ? `${p.pushed ? 'Pressed by staff, verified' : 'Saved'} by ${esc(p.by || '')}${p.at ? ' · ' + fmtFull(p.at) : ''}` : 'Not saved yet'}</span></div></form>`; };
-  return `<section class="card"><h2>${locked ? 'Today · ' : ''}${esc(attFmt(date))}</h2><p class="sub">Two different people for opening and two for closing. Pick from the list or type a name.</p>
+  return `<section class="card"><h2>${locked ? 'Today · ' : ''}${esc(attFmt(date))}</h2><p class="sub">Two names for opening and two for closing (the same person can go in both boxes). Pick from the list or type a name.</p>
     <datalist id="shopnames">${names.map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">${phase('opening', 'Shop opened by', 'Save opening')}${phase('closing', 'Shop closed by', 'Save closing')}</div></section>`;
 }

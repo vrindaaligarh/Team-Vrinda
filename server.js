@@ -1087,7 +1087,7 @@ const routes = {
     if (!['opening', 'closing'].includes(phase)) fail(400, 'Choose opening or closing');
     const list = (Array.isArray(names) ? names : []).map((n) => String(n || '').trim().replace(/\s+/g, ' ').toUpperCase());
     if (list.length !== 2 || list.some((n) => !n || n.length > 60)) fail(400, 'Type both names');
-    if (list[0] === list[1]) fail(400, 'Choose two different people');
+    // Owner, 2026-10-31: both names may be the same person.
     const out = list.filter(shopExcluded);
     if (out.length) fail(400, `${out.join(' and ')} ${out.length > 1 ? 'are' : 'is'} not part of shop opening and closing`);
     const old = db.prepare('SELECT * FROM shop_open_close WHERE date = ?').get(date);
