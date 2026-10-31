@@ -1233,6 +1233,12 @@ const routes = {
     send(res, 200, db.prepare(`SELECT c.id, c.case_name, c.rack_no, c.at, x.name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id JOIN users x ON x.id = e.start_by
       WHERE c.marg_at IS NULL AND c.at >= ? ORDER BY c.id`).all(new Date(Date.now() - 7 * 86400e3).toISOString()));
   },
+  // Owners: syrup cases entered in Marg in the last 24 hours, and by whom.
+  'GET /api/marg-done': async (req, res, u) => {
+    if (!u.is_admin) fail(403, 'Owner only');
+    send(res, 200, db.prepare(`SELECT c.id, c.case_name, c.rack_no, c.at, c.marg_at, x.name, m.name AS marg_by_name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id
+      JOIN users x ON x.id = e.start_by LEFT JOIN users m ON m.id = c.marg_by WHERE c.marg_at >= ? ORDER BY c.marg_at DESC`).all(new Date(Date.now() - 86400e3).toISOString()));
+  },
   'POST /api/marg-done': async (req, res, u) => {
     if (u.dept !== 'Computer' && !u.is_admin) fail(403, 'Not allowed');
     const { id } = await readBody(req);

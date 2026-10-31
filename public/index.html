@@ -287,7 +287,7 @@ function render() {
   $('#lo').onclick = async () => { await api('POST', '/api/logout'); state.me = null; render(); };
   $('#pw').onclick = changePassword;
   loadTab();
-  if (state.me.dept === 'Computer') { margBar(); margTimer = setInterval(margBar, 20000); }
+  if (state.me.dept === 'Computer' || state.me.is_admin) { margBar(); margTimer = setInterval(margBar, 20000); }
   if (['all', 'other', 'status', 'final', 'proxy', 'prep', 'quick', 'board', 'attendance'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus, select:focus') && !attBusy) loadTab(); }, 15000);
 }
 async function changePassword() {
@@ -1255,10 +1255,15 @@ async function viewFixes(m) {
 let margTimer;
 async function margBar() {
   const bar = $('#margbar'); if (!bar) return;
-  let list; try { list = await api('GET', '/api/marg-pending'); } catch { return; }
-  bar.innerHTML = list.length ? `<section class="card margflash"><h2 style="margin:0 0 8px">⚠ Change rack in Marg · ${list.length}</h2>
+  // Owners watch: they see the same flashing list (no Entered button) and who entered each one in the last 24 hours.
+  const owner = state.me.is_admin;
+  let list, done = [];
+  try { [list, done] = await Promise.all([api('GET', '/api/marg-pending'), owner ? api('GET', '/api/marg-done') : []]); } catch { return; }
+  bar.innerHTML = (list.length ? `<section class="card margflash"><h2 style="margin:0 0 8px">⚠ Change rack in Marg · ${list.length}${owner ? ' <small class="sub">waiting for the computer team</small>' : ''}</h2>
     ${list.map((c) => `<div class="bill"><div class="info" style="color:var(--text)"><b style="font-size:17px">${esc(c.case_name)}</b> → rack <b style="font-size:17px">${esc(c.rack_no)}</b>
-      <div class="sub" style="margin:0">Set by ${esc(c.name)} · ${fmtFull(c.at)}</div></div><button class="btn green" data-marg="${c.id}">Entered</button></div>`).join('')}</section>` : '';
+      <div class="sub" style="margin:0">Set by ${esc(c.name)} · ${fmtFull(c.at)}</div></div>${owner ? '<span class="pill amber">Pending</span>' : `<button class="btn green" data-marg="${c.id}">Entered</button>`}</div>`).join('')}</section>` : '')
+    + (owner && done.length ? `<details class="card"><summary><b>Entered in Marg (last 24 hours) · ${done.length}</b></summary>
+      ${done.map((c) => `<div class="bill"><div class="info" style="color:var(--text)"><b>${esc(c.case_name)}</b> → rack <b>${esc(c.rack_no)}</b><div class="sub" style="margin:0">Set by ${esc(c.name)} ${fmtTime(c.at)} · <span style="color:var(--green)">✓ entered by <b>${esc(c.marg_by_name || '')}</b> ${fmtTime(c.marg_at)}</span></div></div></div>`).join('')}</details>` : '');
   bar.onclick = (e) => {
     const b = e.target.closest('button[data-marg]'); if (!b) return;
     b.disabled = true;
