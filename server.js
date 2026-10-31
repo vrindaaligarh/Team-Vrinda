@@ -406,6 +406,23 @@ function saveShopPhase(date, phase, names, u, extra = {}) {
   db.prepare('UPDATE shop_punch SET verified_at = ?, verified_by = ? WHERE date = ? AND phase = ? AND verified_at IS NULL').run(t, u.id, date, phase);
 }
 
+// Owner, 2026-10-31: PRIYANSHI SHARMA and SIYA are the same person; she uses SIYA on this site (Priyanshi Sharma only in PagarBook).
+// Everything recorded under the PRIYANSHI SHARMA login moves to SIYA, and that login is switched off.
+migrate('2026-10-31-priyanshi-is-siya', () => {
+  const from = db.prepare("SELECT id FROM users WHERE username LIKE 'priyanshi%' OR upper(name) LIKE 'PRIYANSHI%'").get();
+  const to = db.prepare("SELECT id FROM users WHERE username = 'siya'").get();
+  if (!from || !to || from.id === to.id) return;
+  for (const { name: table } of db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT IN ('users', 'sessions')").all()) {
+    for (const fk of db.prepare(`PRAGMA foreign_key_list(${table})`).all()) {
+      if (fk.table !== 'users') continue;
+      db.prepare(`UPDATE OR IGNORE ${table} SET ${fk.from} = ? WHERE ${fk.from} = ?`).run(to.id, from.id);
+      db.prepare(`DELETE FROM ${table} WHERE ${fk.from} = ?`).run(from.id); // only rows that would have been duplicates
+    }
+  }
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(from.id);
+  db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(from.id);
+});
+
 // ---------- attendance ----------
 // Same roster and PagarBook name matching as the Attendance tab (public/index.html, ATT_*). Rules start 20 Oct 2026.
 const ATT_START = '2026-10-20';

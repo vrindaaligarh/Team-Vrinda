@@ -1587,7 +1587,7 @@ async function viewAttendance(m) {
 // a month (openings + closings together); anyone below 5 has a ₹500 penalty for that month (at current counts until month end).
 // Owners see and correct any day from 1 Oct 2026; MANSI enters today only. Days 1-11 Oct came from the old Excel sheet.
 // Managers (Arun, Vicky), the girls and the supply team are not part of it (owner, 2026-10-31).
-const SHOP_LIST = ['FARHAN', 'HAYYUL', 'MUKUL', 'SONU', 'AFZAL', 'RIZWAN', 'YASH', 'ANAS', 'AZEEM', 'ABHAY', 'FARAZ', 'HAMZA', 'JUNAID', 'REHAN', 'SAFFAN', 'SAIF', 'SUFIYAN', 'ZUHAIB'];
+const SHOP_LIST = ['FARHAN', 'HAYYUL', 'MUKUL', 'SONU', 'AFZAL', 'RIZWAN', 'YASH', 'ANAS', 'AZEEM', 'ABHAY', 'FARAZ', 'HAMZA', 'JUNAID', 'REHAN', 'SAFFAN', 'SAIF', 'SUFIYAN', 'ZUHAIB', 'ADNAN', 'NAVED', 'RAJ', 'RAYYAN'];
 const SHOP_MIN = 5, SHOP_FINE = 500;
 function shopCounts(rows) {
   const per = new Map(SHOP_LIST.map((n) => [n, { name: n, opened: 0, closed: 0, listed: true }]));
