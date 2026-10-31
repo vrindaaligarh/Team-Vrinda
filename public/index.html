@@ -247,10 +247,11 @@ function renderLogin() {
 
 // ---------- shell ----------
 // Top-level sections of the Vrinda Medical Agencies dashboard; Bill Tracker holds every tab below. More sections come later.
-const SECTIONS_ALL = [['bills', 'Bill Tracker'], ['debtors', 'Debtors', (me) => me.is_admin], ['attendance', 'Attendance', (me) => me.is_admin || me.username === 'mansi'], ['shop', 'Shop Open/Close', (me) => me.is_admin || me.username === 'mansi' || me.can_shop]];
+const SECTIONS_ALL = [['bills', 'Bill Tracker'], ['debtors', 'Debtors', (me) => me.is_admin], ['orders', 'Orders', (me) => me.is_admin], ['attendance', 'Attendance', (me) => me.is_admin || me.username === 'mansi'], ['shop', 'Shop Open/Close', (me) => me.is_admin || me.username === 'mansi' || me.can_shop]];
 const sections = () => SECTIONS_ALL.filter(([, , ok]) => !ok || ok(state.me));
 function tabs() {
   if (state.section === 'debtors') return [['debtors', 'Debtors']];
+  if (state.section === 'orders') return [['orders', 'Plan & Dues'], ['orderlist', 'All Orders'], ['ordercos', 'Companies']];
   if (state.section === 'attendance') return [['attendance', 'Attendance']];
   if (state.section === 'shop') return [['shop', 'Shop Open/Close']];
   // Owners don't log their own jobs, so they don't get My Jobs.
@@ -298,7 +299,7 @@ async function changePassword() {
 async function loadTab() {
   const m = $('#main'); if (!m) return;
   try {
-    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, debtors: viewDebtors, attendance: viewAttendance, shop: viewShop, incentive: viewIncentive, report: viewReport, items: viewItems, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
+    await ({ other: viewOther, mine: viewMine, final: viewFinal, proxy: viewProxy, prep: viewPrep, quick: viewQuick, debtors: viewDebtors, orders: viewOrders, orderlist: viewOrderList, ordercos: viewOrderCos, attendance: viewAttendance, shop: viewShop, incentive: viewIncentive, report: viewReport, items: viewItems, board: viewBoard, verify: viewVerify, all: viewAll, otherlog: viewTaskLog, status: viewStatus, fixes: viewFixes, staff: viewStaff, codes: viewCodes }[state.tab])(m);
     if (!state.me.is_admin && !state.me.is_manager) await fixBar();
   }
   catch (e) { toast(e.message, true); }
@@ -881,6 +882,197 @@ async function viewQuick(m) {
     try { await api('POST', '/api/stage', { bill_id: +en.dataset.qend, task_code: 'PR', action: 'end' }); toast('Ended at ' + fmtTime(new Date().toISOString())); await refresh(); }
     catch (err) { toast(err.message, true); en.disabled = false; }
   };
+}
+
+// ---------- Orders (owner and Ajanta): company orders, payment due per day, orders left to place ----------
+// Owner's rules (2026-10-31): due days counted with the order day as day 1 (order on 1st with 21 days -> pay on 21st; 0 days = same day).
+// No orders on Saturday or Sunday. Order frequency from the company list: twice a week, weekly, biweekly (every 2 weeks), once a month; auto = no planning.
+const ODAY = 864e5;
+const oAdd = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * ODAY).toISOString().slice(0, 10);
+const oDow = (d) => new Date(d + 'T00:00:00Z').getUTCDay();
+const oDiff = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / ODAY);
+const oDue = (d, days) => oAdd(d, Math.max(0, days - 1));
+const oNow = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 16);
+const oFmt = (d, o = { weekday: 'short', day: 'numeric', month: 'short' }) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-IN', { ...o, timeZone: 'UTC' });
+const FREQ = {
+  'twice a week': { per: 2, period: 'week', gap: 3, label: 'Twice a week' },
+  weekly: { per: 1, period: 'week', gap: 7, label: 'Weekly' },
+  biweekly: { per: 1, period: '14 days', gap: 14, label: 'Every 2 weeks' },
+  'once a month': { per: 1, period: 'month', gap: 'month', label: 'Once a month' },
+  auto: { per: 0, label: 'Auto' },
+};
+const FREQ_ORDER = ['twice a week', 'weekly', 'biweekly', 'once a month', 'auto'];
+let orderData = null;
+
+function orderPlan(d, horizon) {
+  const today = d.today, end = oAdd(today, horizon - 1);
+  const periodsOn = (x) => d.periods.filter((p) => p.from_date <= x && x <= p.to_date);
+  const noOrder = (x) => oDow(x) === 0 || oDow(x) === 6 || periodsOn(x).some((p) => p.no_orders);
+  const nextWork = (x) => { for (let i = 0; i < 60 && noOrder(x); i++) x = oAdd(x, 1); return x; };
+  const addGap = (x, f) => f.gap === 'month' ? (() => { const [y, m, dd] = x.split('-').map(Number); const t = new Date(Date.UTC(y, m, Math.min(dd, 28))); return t.toISOString().slice(0, 10); })() : oAdd(x, f.gap);
+  // Periods are counted from the next order day, so on a weekend "this week" means the coming week.
+  const ref = nextWork(today);
+  const workLeft = (to) => { let n = 0; for (let x = ref; x <= to; x = oAdd(x, 1)) if (!noOrder(x)) n++; return n; };
+  const weekStart = oAdd(ref, -((oDow(ref) + 6) % 7)), weekEnd = oAdd(weekStart, 6);
+  const monStart = ref.slice(0, 8) + '01', monEnd = oAdd(addGap(monStart, { gap: 'month' }), -1);
+  const byCo = {};
+  for (const o of d.orders) (byCo[o.company_id] ||= []).push({ ...o, date: o.ordered_at.slice(0, 10), due: oDue(o.ordered_at.slice(0, 10), o.due_days) });
+  const days = {};
+  for (let x = today; x <= end; x = oAdd(x, 1)) days[x] = { date: x, placed: [], planned: [], periods: periodsOn(x) };
+  for (const list of Object.values(byCo)) for (const o of list) if (days[o.due]) days[o.due].placed.push(o);
+  const cos = d.companies.filter((c) => c.active).map((c) => {
+    const f = FREQ[c.category] || FREQ.auto, list = byCo[c.id] || [], last = list[0];
+    const avg = list.length ? list.slice(0, 5).reduce((n, o) => n + o.amount, 0) / Math.min(5, list.length) : 0;
+    const r = { ...c, f, list, last, avg, payToday: oDue(nextWork(today), c.due_days) };
+    r.payPeriods = periodsOn(r.payToday);
+    if (!f.per) return r;
+    const [from, to] = f.period === 'week' ? [weekStart, weekEnd] : f.period === 'month' ? [monStart, monEnd] : [oAdd(ref, -13), ref];
+    r.done = list.filter((o) => o.date >= from && o.date <= to).length;
+    r.left = Math.max(0, f.per - r.done);
+    r.workLeft = f.period === '14 days' ? null : workLeft(to);
+    let next = last ? addGap(last.date, f) : today;
+    if (r.left === 0 && f.period !== '14 days' && next <= to) next = oAdd(to, 1);
+    r.late = next < today ? oDiff(next, today) : 0;
+    r.next = nextWork(next < today ? today : next);
+    for (let x = r.next, i = 0; x <= end && i < 40; x = nextWork(addGap(x, f)), i++) {
+      const due = oDue(x, c.due_days);
+      if (days[due]) days[due].planned.push({ company: c.name, date: x, due, amount: r.avg });
+    }
+    return r;
+  });
+  return { days: Object.values(days), cos, today, weekEnd, noOrder, periodsOn, nextWork };
+}
+
+async function viewOrders(m) {
+  const d = orderData = await api('GET', '/api/orders');
+  const horizon = filters.oDays || 15, P = orderPlan(d, horizon), today = d.today;
+  const coName = Object.fromEntries(d.companies.map((c) => [c.id, c.name]));
+  const tags = (ps) => ps.map((p) => `<span class="pill ${p.no_orders ? 'red' : 'purple'}">${esc(p.label)}</span>`).join(' ');
+  const max = Math.max(1, ...P.days.map((x) => x.placed.reduce((n, o) => n + o.amount, 0) + x.planned.reduce((n, o) => n + o.amount, 0)));
+  const sum = (l) => l.reduce((n, o) => n + o.amount, 0);
+  const tot = (n) => P.days.slice(0, n).reduce((a, x) => a + sum(x.placed) + sum(x.planned), 0);
+  const plan = P.cos.filter((c) => c.f.per);
+  // On a Saturday, Sunday or no-order day, "today" means the next order day.
+  const oday = P.nextWork(today), odayLabel = oday === today ? 'today' : oFmt(oday);
+  const orderToday = plan.filter((c) => c.next === oday);
+  const leftWeek = plan.filter((c) => c.f.period === 'week').reduce((n, c) => n + c.left, 0);
+  const show = filters.oShow || 'all', q = (filters.oq || '').toUpperCase();
+  const rows = plan.filter((c) => show === 'today' ? c.next === oday : show === 'left' ? c.left > 0 : true)
+    .sort((a, b) => a.next.localeCompare(b.next) || b.late - a.late || b.avg - a.avg);
+  const dayRow = (x) => {
+    const pl = sum(x.placed), pn = sum(x.planned), we = oDow(x.date) === 0 || oDow(x.date) === 6, open = filters.oOpen === x.date;
+    return `<tr data-oday="${x.date}" class="click ${x.date === today ? 'pick' : ''}" style="${we ? 'color:var(--muted)' : ''}"><td><b>${oFmt(x.date)}</b>${x.date === today ? ' <span class="pill green">Today</span>' : ''} ${tags(x.periods)}</td>
+      <td class="rs">${pl ? rupees(pl) + ` <small style="color:var(--muted)">(${x.placed.length})</small>` : '—'}</td><td class="rs">${pn ? rupees(pn) + ` <small style="color:var(--muted)">(${x.planned.length})</small>` : x.planned.length ? `<small style="color:var(--muted)">${x.planned.length} new</small>` : '—'}</td>
+      <td class="rs"><b>${pl + pn ? rupees(pl + pn) : '—'}</b></td><td style="width:22%"><div class="row" style="gap:0;flex-wrap:nowrap"><div class="dbar" style="width:${(pl / max * 100).toFixed(1)}%;opacity:1;border-radius:3px 0 0 3px"></div><div class="dbar" style="width:${(pn / max * 100).toFixed(1)}%;opacity:.35;border-radius:0 3px 3px 0"></div></div></td></tr>
+      ${open ? `<tr class="detail"><td colspan="5">${x.placed.map((o) => `<div>✔ <b>${esc(coName[o.company_id])}</b> · ${rupees(o.amount)} · ordered ${oFmt(o.date)} (${o.due_days} days)</div>`).join('')}
+        ${x.planned.map((o) => `<div class="sub" style="margin:0">◌ ${esc(o.company)} · ${o.amount ? 'about ' + rupees(o.amount) : 'no past orders'} · if ordered ${oFmt(o.date)}</div>`).join('') || (x.placed.length ? '' : 'Nothing due.')}</td></tr>` : ''}`;
+  };
+  const coRow = (c) => {
+    const warn = c.payPeriods.length ? `<br><span class="pill purple">⚠ in ${esc(c.payPeriods[0].label)}</span>` : '';
+    return `<tr data-oq="${esc(c.name.toUpperCase())}"><td><b>${esc(c.name)}</b><br><small style="color:var(--muted)">${c.f.label} · ${c.due_days ? c.due_days + ' days credit' : 'pay same day'}</small></td>
+      <td>${c.left ? `<span class="pill amber">${c.left} left</span>` : '<span class="pill green">done</span>'}<br><small style="color:var(--muted)">${c.done} of ${c.f.per} this ${c.f.period}${c.workLeft != null ? ` · ${c.workLeft} order day${c.workLeft === 1 ? '' : 's'} left` : ''}</small></td>
+      <td>${c.last ? `${oFmt(c.last.date)}<br><small style="color:var(--muted)">${rupees(c.last.amount)}</small>` : '<span class="sub">never</span>'}</td>
+      <td><b>${c.next === today ? 'Today' : oFmt(c.next)}</b>${c.late ? `<br><span class="pill red">${c.late} day${c.late > 1 ? 's' : ''} late</span>` : ''}</td>
+      <td class="rs">${c.avg ? rupees(c.avg) : '—'}</td><td>${oFmt(c.payToday)}${warn}</td>
+      <td><button class="btn small ghost" data-opick="${c.id}">+ Order</button></td></tr>`;
+  };
+  m.innerHTML = `<div class="row" style="gap:8px;margin-bottom:12px">
+      <span class="pill ${orderToday.length ? 'amber' : 'gray'}" style="font-size:14px;padding:6px 12px">Order ${odayLabel}: ${orderToday.length} compan${orderToday.length === 1 ? 'y' : 'ies'}${oday !== today ? ' (no orders today)' : ''}</span>
+      <span class="pill gray" style="font-size:14px;padding:6px 12px">Orders left this week: ${leftWeek}</span>
+      <span class="pill gray" style="font-size:14px;padding:6px 12px">Needed next 7 days: <b>${rupees(tot(7))}</b></span>
+      <span class="pill gray" style="font-size:14px;padding:6px 12px">Next ${horizon} days: <b>${rupees(tot(horizon))}</b></span></div>
+    <section class="card"><h2>New order</h2>
+      <form id="oform" class="row" autocomplete="off" style="align-items:flex-end">
+        <label class="grow" style="min-width:240px"><small style="color:var(--muted)">Company</small><br><input id="oco" list="ocolist" placeholder="Type company name" style="width:100%" value="${esc(filters.oPick ? coName[filters.oPick] || '' : '')}"></label>
+        <datalist id="ocolist">${d.companies.filter((c) => c.active).map((c) => `<option value="${esc(c.name)}">`).join('')}</datalist>
+        <label><small style="color:var(--muted)">Amount ₹</small><br><input id="oamt" inputmode="decimal" placeholder="0" style="width:140px"></label>
+        <label><small style="color:var(--muted)">Date and time</small><br><input id="oat" type="datetime-local" value="${oNow()}"></label>
+        <label class="grow" style="min-width:140px"><small style="color:var(--muted)">Note (optional)</small><br><input id="onote" style="width:100%"></label>
+        <button class="btn green">Save order</button></form>
+      <p class="sub" id="oinfo" style="margin:8px 0 0"></p></section>
+    <section class="card"><div class="row"><h2 class="grow" style="margin:0">Money needed in the bank · next ${horizon} days</h2>
+      <div class="seg">${[15, 30, 45].map((n) => `<button data-odays="${n}" class="${n === horizon ? 'on' : ''}">${n} days</button>`).join('')}</div></div>
+      <p class="sub" style="margin:6px 0 10px"><b>Placed</b> = orders already given, due on that day. <b>Expected</b> = orders still to place on plan (company's usual amount, last 5 orders), due on that day. Weekends greyed. Tap a day for companies.</p>
+      <div class="scroll"><table><tr><th>Payment date</th><th class="rs">Placed</th><th class="rs">Expected</th><th class="rs">Total</th><th></th></tr>
+      ${P.days.map(dayRow).join('')}
+      <tr><td><b>Total</b></td><td class="rs"><b>${rupees(P.days.reduce((n, x) => n + sum(x.placed), 0))}</b></td><td class="rs"><b>${rupees(P.days.reduce((n, x) => n + sum(x.planned), 0))}</b></td><td class="rs"><b>${rupees(tot(horizon))}</b></td><td></td></tr></table></div></section>
+    <section class="card"><div class="row" style="flex-wrap:wrap"><h2 class="grow" style="margin:0">Orders left to place</h2>
+      <div class="seg">${[['all', 'All ' + plan.length], ['today', 'Order ' + odayLabel + ' ' + orderToday.length], ['left', 'Left this period ' + plan.filter((c) => c.left).length]].map(([k, l]) => `<button data-oshow="${k}" class="${show === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <p class="sub" style="margin:6px 0 10px">Next order = last order + the company's gap (twice a week 3 days, weekly 7, every 2 weeks 14, monthly 1 month), moved off Saturdays, Sundays and no-order days. "Order → pay on" shows when the payment would fall; ⚠ means it lands in a low-sales period, so order less.</p>
+      <input id="oq" class="billsearch" placeholder="Search company" value="${esc(filters.oq || '')}">
+      <div class="scroll"><table><tr><th>Company</th><th>This period</th><th>Last order</th><th>Next order</th><th class="rs">Usual amount</th><th>Order ${odayLabel} → pay on</th><th></th></tr>
+      ${rows.map(coRow).join('') || '<tr><td colspan="7" class="empty">Nothing here.</td></tr>'}</table></div>
+      ${P.cos.some((c) => !c.f.per) ? `<p class="sub" style="margin:8px 0 0"><b>Auto</b> (no plan): ${P.cos.filter((c) => !c.f.per).map((c) => esc(c.name) + (c.last ? ` (last ${oFmt(c.last.date)})` : '')).join(', ')}</p>` : ''}</section>
+    <section class="card"><h2>Festival / low-sales days</h2><p class="sub">Days when sales dip (like Diwali). Payments falling on these days are marked so you can order less before them. Tick <b>No orders</b> if the shop gives no orders on those days.</p>
+      ${d.periods.map((p) => `<div class="bill"><div class="info" style="color:var(--text)"><b>${esc(p.label)}</b> · ${oFmt(p.from_date)} to ${oFmt(p.to_date)} ${p.no_orders ? '<span class="pill red">No orders</span>' : '<span class="pill purple">Low sales</span>'}</div><button class="btn ghost small del" data-operiod="${p.id}">Remove</button></div>`).join('') || '<p class="empty">None added.</p>'}
+      <form id="opform" class="row" style="margin-top:10px"><input id="oplabel" placeholder="Name, e.g. Holi" style="width:160px"><input type="date" id="opfrom" value="${today}"> to <input type="date" id="opto" value="${today}">
+        <label class="row" style="gap:4px"><input type="checkbox" id="opno"> No orders</label><button class="btn small">Add</button></form></section>`;
+  const info = () => {
+    const c = d.companies.find((x) => x.name.toLowerCase() === $('#oco').value.trim().toLowerCase()), at = $('#oat').value;
+    if (!c) return ($('#oinfo').textContent = '');
+    const day = at.slice(0, 10), due = day ? oDue(day, c.due_days) : '', ps = due ? P.periodsOn(due) : [], we = day && (oDow(day) === 0 || oDow(day) === 6);
+    const pc = P.cos.find((x) => x.id === c.id);
+    $('#oinfo').innerHTML = `${esc(FREQ[c.category] ? FREQ[c.category].label : c.category)} · ${c.due_days} days credit${due ? ` → payment due on <b>${oFmt(due, { weekday: 'long', day: 'numeric', month: 'long' })}</b>` : ''}${ps.length ? ` <span class="pill purple">⚠ in ${esc(ps[0].label)}</span>` : ''}${we ? ' <span class="pill red">Weekend: no orders on Sat/Sun</span>' : ''}${pc && pc.avg ? ` · usual order ${rupees(pc.avg)}` : ''}${pc && pc.last ? ` · last ${oFmt(pc.last.date)}` : ''}`;
+  };
+  $('#oco').oninput = info; $('#oat').oninput = info; info();
+  if (filters.oPick) { $('#oamt').focus(); filters.oPick = null; }
+  $('#oform').onsubmit = (e) => {
+    e.preventDefault();
+    const c = d.companies.find((x) => x.name.toLowerCase() === $('#oco').value.trim().toLowerCase()), at = $('#oat').value;
+    if (!c) return toast('Pick a company from the list', true);
+    if (at && [0, 6].includes(oDow(at.slice(0, 10))) && !confirm('This date is a ' + (oDow(at.slice(0, 10)) ? 'Saturday' : 'Sunday') + '. Save anyway?')) return;
+    act(e.submitter, () => api('POST', '/api/orders', { company_id: c.id, amount: $('#oamt').value.replace(/,/g, ''), ordered_at: at, note: $('#onote').value }), 'Order saved');
+  };
+  m.querySelectorAll('[data-odays]').forEach((b) => b.onclick = () => { filters.oDays = +b.dataset.odays; loadTab(); });
+  m.querySelectorAll('[data-oshow]').forEach((b) => b.onclick = () => { filters.oShow = b.dataset.oshow; loadTab(); });
+  m.querySelectorAll('tr[data-oday]').forEach((tr) => tr.onclick = () => { filters.oOpen = filters.oOpen === tr.dataset.oday ? null : tr.dataset.oday; loadTab(); });
+  m.querySelectorAll('[data-opick]').forEach((b) => b.onclick = () => { filters.oPick = +b.dataset.opick; window.scrollTo(0, 0); loadTab(); });
+  m.querySelectorAll('[data-operiod]').forEach((b) => b.onclick = () => confirm('Remove this period?') && act(b, () => api('POST', '/api/order-periods', { id: b.dataset.operiod, remove: true })));
+  $('#opform').onsubmit = (e) => { e.preventDefault(); act(e.submitter, () => api('POST', '/api/order-periods', { label: $('#oplabel').value, from_date: $('#opfrom').value, to_date: $('#opto').value, no_orders: $('#opno').checked })); };
+  const filt = () => { const v = $('#oq').value.trim().toUpperCase(); filters.oq = v; m.querySelectorAll('tr[data-oq]').forEach((tr) => { tr.hidden = v && !tr.dataset.oq.includes(v); }); };
+  $('#oq').oninput = filt; filt();
+}
+
+async function viewOrderList(m) {
+  const d = await api('GET', '/api/orders');
+  const coName = Object.fromEntries(d.companies.map((c) => [c.id, c.name]));
+  const months = {};
+  for (const o of d.orders) { const k = o.ordered_at.slice(0, 7); months[k] = (months[k] || 0) + o.amount; }
+  m.innerHTML = `<section class="card"><h2>All orders · last 150 days · ${d.orders.length}</h2>
+    <p class="sub">${Object.entries(months).map(([k, v]) => `${oFmt(k + '-01', { month: 'long', year: 'numeric' })}: <b>${rupees(v)}</b>`).join(' · ') || 'No orders yet.'}</p>
+    <input id="olq" class="billsearch" placeholder="Search company" value="${esc(filters.olq || '')}">
+    <div class="scroll"><table><tr><th>Ordered</th><th>Company</th><th class="rs">Amount</th><th>Payment due</th><th>Note</th><th>Entered by</th><th></th></tr>
+    ${d.orders.map((o) => filters.oEdit === o.id
+      ? `<tr><td><input type="datetime-local" id="oe-at" value="${o.ordered_at}"></td><td><b>${esc(coName[o.company_id])}</b></td><td><input id="oe-amt" value="${o.amount}" inputmode="decimal" style="width:120px"></td><td>${o.due_days} days</td><td><input id="oe-note" value="${esc(o.note)}"></td><td></td>
+        <td><button class="btn small green" data-osave="${o.id}" data-co="${o.company_id}">Save</button> <button class="btn small ghost" data-ocancel>Cancel</button></td></tr>`
+      : `<tr data-q="${esc((coName[o.company_id] || '').toUpperCase())}"><td>${oFmt(o.ordered_at.slice(0, 10))} ${o.ordered_at.slice(11)}</td><td><b>${esc(coName[o.company_id])}</b></td><td class="rs"><b>${rupees(o.amount)}</b></td>
+        <td>${oFmt(oDue(o.ordered_at.slice(0, 10), o.due_days))} <small style="color:var(--muted)">(${o.due_days} d)</small></td><td><small>${esc(o.note)}</small></td><td><small>${esc(o.by_name || '')}</small></td>
+        <td><button class="btn small ghost" data-oedit="${o.id}">Edit</button> <button class="btn small ghost del" data-odel="${o.id}">Delete</button></td></tr>`).join('')}</table></div></section>`;
+  m.querySelectorAll('[data-oedit]').forEach((b) => b.onclick = () => { filters.oEdit = +b.dataset.oedit; loadTab(); });
+  m.querySelectorAll('[data-ocancel]').forEach((b) => b.onclick = () => { filters.oEdit = null; loadTab(); });
+  m.querySelectorAll('[data-osave]').forEach((b) => b.onclick = () => act(b, async () => { await api('POST', '/api/orders', { id: b.dataset.osave, company_id: b.dataset.co, amount: $('#oe-amt').value.replace(/,/g, ''), ordered_at: $('#oe-at').value, note: $('#oe-note').value }); filters.oEdit = null; }, 'Saved'));
+  m.querySelectorAll('[data-odel]').forEach((b) => b.onclick = () => confirm('Delete this order?') && act(b, () => api('POST', '/api/orders', { id: b.dataset.odel, remove: true }), 'Deleted'));
+  const filt = () => { const v = $('#olq').value.trim().toUpperCase(); filters.olq = v; m.querySelectorAll('tr[data-q]').forEach((tr) => { tr.hidden = v && !tr.dataset.q.includes(v); }); };
+  $('#olq').oninput = filt; filt();
+}
+
+async function viewOrderCos(m) {
+  const d = await api('GET', '/api/orders');
+  const opts = (v) => FREQ_ORDER.map((k) => `<option value="${k}" ${k === v ? 'selected' : ''}>${FREQ[k].label}</option>`).join('');
+  const sorted = d.companies.slice().sort((a, b) => FREQ_ORDER.indexOf(a.category) - FREQ_ORDER.indexOf(b.category) || a.name.localeCompare(b.name));
+  m.innerHTML = `<section class="card"><h2>Companies · ${d.companies.length}</h2><p class="sub">From your orders.xlsx. Change the order frequency or due days and press Save. A changed due days applies to new orders only. Untick Active to hide a company.</p>
+    <form id="ocnew" class="row" style="margin-bottom:10px"><input id="ocn-name" placeholder="New company name" class="grow"><select id="ocn-cat">${opts('weekly')}</select><input id="ocn-days" type="number" min="0" value="21" style="width:80px"> days <button class="btn small">Add</button></form>
+    <input id="ocq" class="billsearch" placeholder="Search company">
+    <div class="scroll"><table><tr><th>Company</th><th>Order frequency</th><th>Due days</th><th>Active</th><th></th></tr>
+    ${sorted.map((c) => `<tr data-q="${esc(c.name.toUpperCase())}" style="${c.active ? '' : 'opacity:.5'}"><td><input value="${esc(c.name)}" data-f="name" data-id="${c.id}" style="width:100%;min-width:220px"></td><td><select data-f="category" data-id="${c.id}">${opts(c.category)}</select></td>
+      <td><input type="number" min="0" value="${c.due_days}" data-f="due_days" data-id="${c.id}" style="width:80px"></td><td><input type="checkbox" data-f="active" data-id="${c.id}" ${c.active ? 'checked' : ''}></td>
+      <td><button class="btn small ghost" data-cosave="${c.id}">Save</button></td></tr>`).join('')}</table></div></section>`;
+  m.querySelectorAll('[data-cosave]').forEach((b) => b.onclick = () => {
+    const v = (f) => m.querySelector(`[data-f="${f}"][data-id="${b.dataset.cosave}"]`);
+    act(b, () => api('POST', '/api/order-companies', { id: b.dataset.cosave, name: v('name').value, category: v('category').value, due_days: Number(v('due_days').value), active: v('active').checked }), 'Saved');
+  });
+  $('#ocnew').onsubmit = (e) => { e.preventDefault(); act(e.submitter, () => api('POST', '/api/order-companies', { name: $('#ocn-name').value, category: $('#ocn-cat').value, due_days: Number($('#ocn-days').value) }), 'Company added'); };
+  $('#ocq').oninput = () => { const v = $('#ocq').value.trim().toUpperCase(); m.querySelectorAll('tr[data-q]').forEach((tr) => { tr.hidden = v && !tr.dataset.q.includes(v); }); };
 }
 
 // ---------- Debtors (owners): upload Debtors.xls, see day-wise totals and the top 100 ----------
