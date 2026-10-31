@@ -904,7 +904,7 @@ const FREQ = {
 const FREQ_ORDER = ['twice a week', 'weekly', 'biweekly', 'once a month', 'auto'];
 let orderData = null;
 
-function orderPlan(d, horizon) {
+function orderPlan(d, horizon, back = 0) {
   const today = d.today, end = oAdd(today, horizon - 1);
   const periodsOn = (x) => d.periods.filter((p) => p.from_date <= x && x <= p.to_date);
   const noOrder = (x) => oDow(x) === 0 || oDow(x) === 6 || periodsOn(x).some((p) => p.no_orders);
@@ -918,7 +918,7 @@ function orderPlan(d, horizon) {
   const byCo = {};
   for (const o of d.orders) (byCo[o.company_id] ||= []).push({ ...o, date: o.ordered_at.slice(0, 10), due: oDue(o.ordered_at.slice(0, 10), o.due_days) });
   const days = {};
-  for (let x = today; x <= end; x = oAdd(x, 1)) days[x] = { date: x, placed: [], planned: [], periods: periodsOn(x) };
+  for (let x = oAdd(today, -back); x <= end; x = oAdd(x, 1)) days[x] = { date: x, placed: [], planned: [], periods: periodsOn(x) };
   for (const list of Object.values(byCo)) for (const o of list) if (days[o.due]) days[o.due].placed.push(o);
   const cos = d.companies.filter((c) => c.active).map((c) => {
     const f = FREQ[c.category] || FREQ.auto, list = byCo[c.id] || [], last = list[0];
@@ -952,12 +952,13 @@ function orderPlan(d, horizon) {
 
 async function viewOrders(m) {
   const d = orderData = await api('GET', '/api/orders');
-  const horizon = filters.oDays || 15, P = orderPlan(d, horizon), today = d.today;
+  const horizon = filters.oDays || 15, back = filters.oBack || 0, P = orderPlan(d, horizon, back), today = d.today;
   const coName = Object.fromEntries(d.companies.map((c) => [c.id, c.name])), oName = (o) => o.company_id ? coName[o.company_id] : o.name + ' (manual)';
   const tags = (ps) => ps.map((p) => `<span class="pill ${p.no_orders ? 'red' : 'purple'}">${esc(p.label)}</span>`).join(' ');
   const max = Math.max(1, ...P.days.map((x) => x.placed.reduce((n, o) => n + o.amount, 0) + x.planned.reduce((n, o) => n + o.amount, 0)));
   const sum = (l) => l.reduce((n, o) => n + o.amount, 0);
-  const tot = (n) => P.days.slice(0, n).reduce((a, x) => a + sum(x.placed) + sum(x.planned), 0);
+  const fut = P.days.filter((x) => x.date >= today), past = P.days.filter((x) => x.date < today);
+  const tot = (n) => fut.slice(0, n).reduce((a, x) => a + sum(x.placed) + sum(x.planned), 0);
   const plan = P.cos.filter((c) => c.f.per);
   // On a Saturday, Sunday or no-order day, "today" means the next order day.
   const oday = P.nextWork(today), odayLabel = oday === today ? 'today' : oFmt(oday);
@@ -971,7 +972,7 @@ async function viewOrders(m) {
     return `<tr data-oday="${x.date}" class="click ${x.date === today ? 'pick' : ''}" style="${we ? 'color:var(--muted)' : ''}"><td><b>${oFmt(x.date)}</b>${x.date === today ? ' <span class="pill green">Today</span>' : ''} ${tags(x.periods)}</td>
       <td class="rs">${pl ? rupees(pl) + ` <small style="color:var(--muted)">(${x.placed.length})</small>` : '—'}</td><td class="rs">${pn ? rupees(pn) + ` <small style="color:var(--muted)">(${x.planned.length})</small>` : x.planned.length ? `<small style="color:var(--muted)">${x.planned.length} new</small>` : '—'}</td>
       <td class="rs"><b>${pl + pn ? rupees(pl + pn) : '—'}</b></td><td style="width:22%"><div class="row" style="gap:0;flex-wrap:nowrap"><div class="dbar" style="width:${(pl / max * 100).toFixed(1)}%;opacity:1;border-radius:3px 0 0 3px"></div><div class="dbar" style="width:${(pn / max * 100).toFixed(1)}%;opacity:.35;border-radius:0 3px 3px 0"></div></div></td></tr>
-      ${open ? `<tr class="detail"><td colspan="5">${x.placed.map((o) => `<div>✔ <b>${esc(oName(o))}</b> · ${rupees(o.amount)} · ordered ${oFmt(o.date)} (${o.due_days} days)</div>`).join('')}
+      ${open ? `<tr class="detail"><td colspan="5">${x.placed.map((o) => `<div>✔ <b>${esc(oName(o))}</b> · ${rupees(o.amount)} · ${o.company_id || !o.note ? `ordered ${oFmt(o.date)} (${o.due_days} days)` : esc(o.note)}</div>`).join('')}
         ${x.planned.map((o) => `<div class="sub" style="margin:0">◌ ${esc(o.company)} · ${o.amount ? 'about ' + rupees(o.amount) : 'no past orders'} · if ordered ${oFmt(o.date)}</div>`).join('') || (x.placed.length ? '' : 'Nothing due.')}</td></tr>` : ''}`;
   };
   const coRow = (c) => {
@@ -1006,11 +1007,11 @@ async function viewOrders(m) {
       ${rows.map((c, i) => (i === 0 || rows[i - 1].category !== c.category ? `<tr><td colspan="7" style="background:var(--bg)"><b>${c.f.label}${c.category === 'twice a week' ? ' · large companies, focus' : ''}</b> · ${rows.filter((x) => x.category === c.category).reduce((n, x) => n + x.left, 0)} left this week</td></tr>` : '') + coRow(c)).join('') || '<tr><td colspan="7" class="empty">Nothing here.</td></tr>'}</table></div>
       ${P.cos.some((c) => !c.f.per) ? `<p class="sub" style="margin:8px 0 0"><b>Auto</b> (no plan): ${P.cos.filter((c) => !c.f.per).map((c) => esc(c.name) + (c.last ? ` (last ${oFmt(c.last.date)})` : '')).join(', ')}</p>` : ''}</section>
     <section class="card"><div class="row"><h2 class="grow" style="margin:0">Money needed in the bank · next ${horizon} days</h2>
-      <div class="seg">${[15, 30, 45].map((n) => `<button data-odays="${n}" class="${n === horizon ? 'on' : ''}">${n} days</button>`).join('')}</div></div>
+      <div class="row" style="gap:6px"><button class="btn small ${back ? '' : 'ghost'}" id="oback">${back ? '✓ ' : ''}Last 15 days too</button><div class="seg">${[15, 30, 45].map((n) => `<button data-odays="${n}" class="${n === horizon ? 'on' : ''}">${n} days</button>`).join('')}</div></div></div>
       <p class="sub" style="margin:6px 0 10px"><b>Placed</b> = orders already given, due on that day. <b>Expected</b> = orders still to place on plan (company's usual amount, last 5 orders), due on that day. Weekends greyed. Tap a day for companies.</p>
       <div class="scroll"><table><tr><th>Payment date</th><th class="rs">Placed</th><th class="rs">Expected</th><th class="rs">Total</th><th></th></tr>
-      ${P.days.map(dayRow).join('')}
-      <tr><td><b>Total</b></td><td class="rs"><b>${rupees(P.days.reduce((n, x) => n + sum(x.placed), 0))}</b></td><td class="rs"><b>${rupees(P.days.reduce((n, x) => n + sum(x.planned), 0))}</b></td><td class="rs"><b>${rupees(tot(horizon))}</b></td><td></td></tr></table></div></section>
+      ${past.length ? past.map(dayRow).join('') + `<tr><td><b>Last ${past.length} days total</b></td><td class="rs"><b>${rupees(past.reduce((n, x) => n + sum(x.placed), 0))}</b></td><td></td><td class="rs"><b>${rupees(past.reduce((n, x) => n + sum(x.placed), 0))}</b></td><td></td></tr><tr><td colspan="5" style="background:var(--bg)"><b>From today</b></td></tr>` : ''}${fut.map(dayRow).join('')}
+      <tr><td><b>Next ${horizon} days total</b></td><td class="rs"><b>${rupees(fut.reduce((n, x) => n + sum(x.placed), 0))}</b></td><td class="rs"><b>${rupees(fut.reduce((n, x) => n + sum(x.planned), 0))}</b></td><td class="rs"><b>${rupees(tot(horizon))}</b></td><td></td></tr></table></div></section>
     <section class="card"><h2>Festival / low-sales days</h2><p class="sub">Days when sales dip (like Diwali). Payments falling on these days are marked so you can order less before them. Tick <b>No orders</b> if the shop gives no orders on those days.</p>
       ${d.periods.map((p) => `<div class="bill"><div class="info" style="color:var(--text)"><b>${esc(p.label)}</b> · ${oFmt(p.from_date)} to ${oFmt(p.to_date)} ${p.no_orders ? '<span class="pill red">No orders</span>' : '<span class="pill purple">Low sales</span>'}</div><button class="btn ghost small del" data-operiod="${p.id}">Remove</button></div>`).join('') || '<p class="empty">None added.</p>'}
       <form id="opform" class="row" style="margin-top:10px"><input id="oplabel" placeholder="Name, e.g. Holi" style="width:160px"><input type="date" id="opfrom" value="${today}"> to <input type="date" id="opto" value="${today}">
@@ -1038,6 +1039,7 @@ async function viewOrders(m) {
     if (at && [0, 6].includes(oDow(at.slice(0, 10))) && !confirm('This date is a ' + (oDow(at.slice(0, 10)) ? 'Saturday' : 'Sunday') + '. Save anyway?')) return;
     act(e.submitter, () => api('POST', '/api/orders', { company_id: c ? c.id : null, name, due_days: c ? undefined : Number($('#odays').value), amount: $('#oamt').value.replace(/,/g, ''), ordered_at: at, note: $('#onote').value }), 'Order saved');
   };
+  $('#oback').onclick = () => { filters.oBack = back ? 0 : 15; loadTab(); };
   m.querySelectorAll('[data-odays]').forEach((b) => b.onclick = () => { filters.oDays = +b.dataset.odays; loadTab(); });
   m.querySelectorAll('[data-oshow]').forEach((b) => b.onclick = () => { filters.oShow = b.dataset.oshow; loadTab(); });
   m.querySelectorAll('tr[data-oday]').forEach((tr) => tr.onclick = () => { filters.oOpen = filters.oOpen === tr.dataset.oday ? null : tr.dataset.oday; loadTab(); });

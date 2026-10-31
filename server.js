@@ -581,6 +581,12 @@ migrate('2026-10-31-orders', () => {
   db.prepare("INSERT INTO order_periods (from_date, to_date, label, no_orders) VALUES ('2026-11-05', '2026-11-10', 'Diwali week (low sales)', 0)").run();
 });
 
+// Owner's list (2026-10-31): expected payments per due date for orders placed before the Orders tab. Saved as manual orders due that day.
+migrate('2026-10-31-opening-dues', () => {
+  const ins = db.prepare("INSERT INTO orders (company_id, name, amount, ordered_at, due_days, note, created_at) VALUES (NULL, 'Earlier orders', ?, ?, 0, 'Earlier orders (owner list)', ?)");
+  for (const [d, a] of [['2026-10-18', 1333000], ['2026-10-19', 373000], ['2026-10-20', 816000], ['2026-10-21', 236000], ['2026-10-22', 165452], ['2026-10-23', 1200000], ['2026-10-25', 4329000], ['2026-10-26', 2982000], ['2026-10-27', 2055663], ['2026-10-28', 1590000], ['2026-10-29', 157000], ['2026-10-30', 386670], ['2026-10-31', 160000], ['2026-11-01', 3353443], ['2026-11-02', 2222300], ['2026-11-03', 1521000], ['2026-11-04', 1767000], ['2026-11-06', 260000], ['2026-11-08', 2018000], ['2026-11-10', 2367627], ['2026-11-11', 3523000], ['2026-11-12', 1190450], ['2026-11-16', 2245000], ['2026-11-17', 188714], ['2026-11-18', 4425080]]) ins.run(a, d + 'T00:00', new Date().toISOString());
+});
+
 // ---------- helpers ----------
 // Adds .cases (syrup case name + rack) to work rows of the Syrup cases task.
 function withCases(rows) {
