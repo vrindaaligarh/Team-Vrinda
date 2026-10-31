@@ -1350,8 +1350,8 @@ const routes = {
     if (!e) fail(404, 'Task not found');
     if (e.start_by !== u.id && !u.is_admin && !u.is_manager && !u.can_proxy) fail(403, 'Only the person doing this task can add cases');
     if (remove) { db.prepare('DELETE FROM syrup_cases WHERE id = ? AND entry_id = ?').run(remove, e.id); return send(res, 200, { ok: true }); }
-    const name = String(case_name || '').trim().toUpperCase().slice(0, 80), rack = String(rack_no || '').trim().toUpperCase().slice(0, 20);
-    if (!name && e.task_code === 'O') fail(400, 'Type the case name'); // product name is optional for racks
+    const name = String(case_name || '').trim().toUpperCase().slice(0, 200), rack = String(rack_no || '').trim().toUpperCase().slice(0, 20);
+    // The case / product name is optional for every task (owner, 2026-10-31); only the rack no. is needed.
     if (!rack) fail(400, 'Type the rack no.');
     db.prepare('INSERT INTO syrup_cases (entry_id, case_name, rack_no, at, by) VALUES (?, ?, ?, ?, ?)').run(e.id, name, rack, now(), u.entered_by || u.id);
     send(res, 200, { ok: true });
