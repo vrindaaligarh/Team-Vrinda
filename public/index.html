@@ -914,7 +914,7 @@ function orderPlan(d, horizon) {
   const ref = nextWork(today);
   const workLeft = (to) => { let n = 0; for (let x = ref; x <= to; x = oAdd(x, 1)) if (!noOrder(x)) n++; return n; };
   const weekStart = oAdd(ref, -((oDow(ref) + 6) % 7)), weekEnd = oAdd(weekStart, 6);
-  const monStart = ref.slice(0, 8) + '01', monEnd = oAdd(addGap(monStart, { gap: 'month' }), -1);
+  let lastWork = weekEnd; while (lastWork > ref && noOrder(lastWork)) lastWork = oAdd(lastWork, -1);
   const byCo = {};
   for (const o of d.orders) (byCo[o.company_id] ||= []).push({ ...o, date: o.ordered_at.slice(0, 10), due: oDue(o.ordered_at.slice(0, 10), o.due_days) });
   const days = {};
@@ -926,14 +926,21 @@ function orderPlan(d, horizon) {
     const r = { ...c, f, list, last, avg, payToday: oDue(nextWork(today), c.due_days) };
     r.payPeriods = periodsOn(r.payToday);
     if (!f.per) return r;
-    const [from, to] = f.period === 'week' ? [weekStart, weekEnd] : f.period === 'month' ? [monStart, monEnd] : [oAdd(ref, -13), ref];
-    r.done = list.filter((o) => o.date >= from && o.date <= to).length;
-    r.left = Math.max(0, f.per - r.done);
-    r.workLeft = f.period === '14 days' ? null : workLeft(to);
-    let next = last ? addGap(last.date, f) : today;
-    if (r.left === 0 && f.period !== '14 days' && next <= to) next = oAdd(to, 1);
-    r.late = next < today ? oDiff(next, today) : 0;
-    r.next = nextWork(next < today ? today : next);
+    // Owner (2026-10-31): orders left are counted per week (Mon-Sun). Twice-a-week companies are the big ones: 2 orders spread over the week.
+    r.done = list.filter((o) => o.date >= weekStart && o.date <= weekEnd).length;
+    r.workLeft = workLeft(weekEnd);
+    const rolling = last ? addGap(last.date, f) : today;
+    r.late = rolling < today ? oDiff(rolling, today) : 0;
+    let next = nextWork(rolling < ref ? ref : rolling);
+    if (f.period === 'week') {
+      r.per = f.per; r.left = Math.max(0, f.per - r.done);
+      if (!r.left) next = nextWork(oAdd(weekEnd, 1));
+      else if (next > lastWork && lastWork >= ref && (!last || last.date < lastWork)) next = lastWork; // fit the order(s) left into this week
+    } else {
+      // Every 2 weeks / once a month: needed this week only when the next order falls in this week.
+      r.per = next <= weekEnd || r.done ? 1 : 0; r.left = r.done ? 0 : r.per;
+    }
+    r.next = next;
     for (let x = r.next, i = 0; x <= end && i < 40; x = nextWork(addGap(x, f)), i++) {
       const due = oDue(x, c.due_days);
       if (days[due]) days[due].planned.push({ company: c.name, date: x, due, amount: r.avg });
@@ -955,10 +962,10 @@ async function viewOrders(m) {
   // On a Saturday, Sunday or no-order day, "today" means the next order day.
   const oday = P.nextWork(today), odayLabel = oday === today ? 'today' : oFmt(oday);
   const orderToday = plan.filter((c) => c.next === oday);
-  const leftWeek = plan.filter((c) => c.f.period === 'week').reduce((n, c) => n + c.left, 0);
+  const leftWeek = plan.reduce((n, c) => n + c.left, 0);
   const show = filters.oShow || 'all', q = (filters.oq || '').toUpperCase();
   const rows = plan.filter((c) => show === 'today' ? c.next === oday : show === 'left' ? c.left > 0 : true)
-    .sort((a, b) => a.next.localeCompare(b.next) || b.late - a.late || b.avg - a.avg);
+    .sort((a, b) => FREQ_ORDER.indexOf(a.category) - FREQ_ORDER.indexOf(b.category) || b.left - a.left || a.next.localeCompare(b.next) || b.late - a.late || b.avg - a.avg);
   const dayRow = (x) => {
     const pl = sum(x.placed), pn = sum(x.planned), we = oDow(x.date) === 0 || oDow(x.date) === 6, open = filters.oOpen === x.date;
     return `<tr data-oday="${x.date}" class="click ${x.date === today ? 'pick' : ''}" style="${we ? 'color:var(--muted)' : ''}"><td><b>${oFmt(x.date)}</b>${x.date === today ? ' <span class="pill green">Today</span>' : ''} ${tags(x.periods)}</td>
@@ -970,7 +977,7 @@ async function viewOrders(m) {
   const coRow = (c) => {
     const warn = c.payPeriods.length ? `<br><span class="pill purple">⚠ in ${esc(c.payPeriods[0].label)}</span>` : '';
     return `<tr data-oq="${esc(c.name.toUpperCase())}"><td><b>${esc(c.name)}</b><br><small style="color:var(--muted)">${c.f.label} · ${c.due_days ? c.due_days + ' days credit' : 'pay same day'}</small></td>
-      <td>${c.left ? `<span class="pill amber">${c.left} left</span>` : '<span class="pill green">done</span>'}<br><small style="color:var(--muted)">${c.done} of ${c.f.per} this ${c.f.period}${c.workLeft != null ? ` · ${c.workLeft} order day${c.workLeft === 1 ? '' : 's'} left` : ''}</small></td>
+      <td>${c.left ? `<span class="pill amber">${c.left} left</span>` : c.per ? '<span class="pill green">done</span>' : '<span class="pill gray">not this week</span>'}<br><small style="color:var(--muted)">${c.per ? `${c.done} of ${c.per} this week · ${c.workLeft} order day${c.workLeft === 1 ? '' : 's'} left` : c.f.label.toLowerCase()}</small></td>
       <td>${c.last ? `${oFmt(c.last.date)}<br><small style="color:var(--muted)">${rupees(c.last.amount)}</small>` : '<span class="sub">never</span>'}</td>
       <td><b>${c.next === today ? 'Today' : oFmt(c.next)}</b>${c.late ? `<br><span class="pill red">${c.late} day${c.late > 1 ? 's' : ''} late</span>` : ''}</td>
       <td class="rs">${c.avg ? rupees(c.avg) : '—'}</td><td>${oFmt(c.payToday)}${warn}</td>
@@ -992,11 +999,11 @@ async function viewOrders(m) {
         <button class="btn green">Save order</button></form>
       <p class="sub" id="oinfo" style="margin:8px 0 0"></p></section>
     <section class="card"><div class="row" style="flex-wrap:wrap"><h2 class="grow" style="margin:0">Orders left to place</h2>
-      <div class="seg">${[['all', 'All ' + plan.length], ['today', 'Order ' + odayLabel + ' ' + orderToday.length], ['left', 'Left this period ' + plan.filter((c) => c.left).length]].map(([k, l]) => `<button data-oshow="${k}" class="${show === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-      <p class="sub" style="margin:6px 0 10px">Next order = last order + the company's gap (twice a week 3 days, weekly 7, every 2 weeks 14, monthly 1 month), moved off Saturdays, Sundays and no-order days. "Order → pay on" shows when the payment would fall; ⚠ means it lands in a low-sales period, so order less.</p>
+      <div class="seg">${[['all', 'All ' + plan.length], ['today', 'Order ' + odayLabel + ' ' + orderToday.length], ['left', 'Left this week ' + plan.filter((c) => c.left).length]].map(([k, l]) => `<button data-oshow="${k}" class="${show === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <p class="sub" style="margin:6px 0 10px">Counted per week (Monday to Sunday). Twice-a-week companies get 2 orders spread over the week (about 3 days apart); weekly 1; every 2 weeks and monthly only in the week their next order falls. Saturdays, Sundays and no-order days are skipped. "Order → pay on" shows when the payment would fall; ⚠ means it lands in a low-sales period, so order less.</p>
       <input id="oq" class="billsearch" placeholder="Search company" value="${esc(filters.oq || '')}">
-      <div class="scroll"><table><tr><th>Company</th><th>This period</th><th>Last order</th><th>Next order</th><th class="rs">Usual amount</th><th>Order ${odayLabel} → pay on</th><th></th></tr>
-      ${rows.map(coRow).join('') || '<tr><td colspan="7" class="empty">Nothing here.</td></tr>'}</table></div>
+      <div class="scroll"><table><tr><th>Company</th><th>This week</th><th>Last order</th><th>Next order</th><th class="rs">Usual amount</th><th>Order ${odayLabel} → pay on</th><th></th></tr>
+      ${rows.map((c, i) => (i === 0 || rows[i - 1].category !== c.category ? `<tr><td colspan="7" style="background:var(--bg)"><b>${c.f.label}${c.category === 'twice a week' ? ' · large companies, focus' : ''}</b> · ${rows.filter((x) => x.category === c.category).reduce((n, x) => n + x.left, 0)} left this week</td></tr>` : '') + coRow(c)).join('') || '<tr><td colspan="7" class="empty">Nothing here.</td></tr>'}</table></div>
       ${P.cos.some((c) => !c.f.per) ? `<p class="sub" style="margin:8px 0 0"><b>Auto</b> (no plan): ${P.cos.filter((c) => !c.f.per).map((c) => esc(c.name) + (c.last ? ` (last ${oFmt(c.last.date)})` : '')).join(', ')}</p>` : ''}</section>
     <section class="card"><div class="row"><h2 class="grow" style="margin:0">Money needed in the bank · next ${horizon} days</h2>
       <div class="seg">${[15, 30, 45].map((n) => `<button data-odays="${n}" class="${n === horizon ? 'on' : ''}">${n} days</button>`).join('')}</div></div>
