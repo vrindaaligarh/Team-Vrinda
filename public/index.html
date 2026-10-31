@@ -259,6 +259,7 @@ function tabs() {
   if (state.me.verify_codes.length && !state.me.is_admin && !state.me.is_manager) t.push(['verify', 'Verify Jobs']);
   if (state.me.is_admin || state.me.tasks.includes('FR')) t.push(['final', 'Final Verification']);
   if (state.me.can_proxy && !state.me.is_admin && !state.me.is_manager) t.push(['all', 'All Bills']);
+  if (state.me.can_verify_items && !state.me.is_admin && !state.me.is_manager) t.push(['items', 'Verify Racks']);
   if (state.me.is_admin || state.me.is_manager) t.push(['all', 'All Bills'], ['otherlog', 'Task Log'], ['status', 'Staff Status'], ['report', 'Daily Report'], ['items', 'Verify Racks'], ['incentive', 'Incentive'], ['fixes', 'Fix Requests']);
   if (state.me.is_admin) t.push(['staff', 'Staff'], ['codes', 'Task Codes']);
   return t;
@@ -999,14 +1000,14 @@ async function viewDebtors(m) {
 // ---------- Verify Racks (Arun, owners): tick each rack, tube rack and syrup case ----------
 async function viewItems(m) {
   const jobs = await api('GET', '/api/item-verify');
-  const items = (j) => [...(j.racks || []).map((x) => ({ kind: 'rack', id: x.id, label: x.rack_no, v: x.verified_at })), ...(j.cases || []).map((x) => ({ kind: 'case', id: x.id, label: `${x.case_name} · rack ${x.rack_no}`, v: x.verified_at }))];
+  const items = (j) => [...(j.racks || []).map((x) => ({ kind: 'rack', id: x.id, label: x.rack_no, v: x.verified_at, by: x.verified_by_name })), ...(j.cases || []).map((x) => ({ kind: 'case', id: x.id, label: `${x.case_name} · rack ${x.rack_no}`, v: x.verified_at, by: x.verified_by_name }))];
   const waiting = jobs.reduce((n, j) => n + items(j).filter((x) => !x.v).length, 0);
   m.innerHTML = `<section class="card"><h2>Verify racks, tube racks and syrup cases · ${waiting} waiting</h2>
-    <p class="sub">Last 3 days. Tap each rack or case after checking it. When every item of a finished job is ticked, the whole job is verified.</p></section>
+    <p class="sub">Last 3 days. Tap each rack or case after checking it. Arun or Sonu verifying an item is enough; it shows ✓ with their name. When every item of a finished job is ticked, the whole job is verified.</p></section>
     ${jobs.map((j) => { const l = items(j), left = l.filter((x) => !x.v).length; return `<section class="card"><div class="row" style="flex-wrap:wrap"><span class="code">${j.task_code}</span>
       <div class="grow"><b>${esc(j.start_by_name || '')}</b> · ${esc(j.task_name)}<div class="sub" style="margin:0">${fmtFull(j.start_at)} – ${j.end_at ? fmtTime(j.end_at) : 'running'} · ${l.length - left} of ${l.length} verified${j.verified_at ? ` · <span class="pill green">✓ Job verified by ${esc(j.verified_by_name || '')}</span>` : ''}</div></div>
       ${left ? `<button class="btn green small" data-vall="${j.id}">Verify all ${left}</button>` : `<button class="btn ghost small" data-vundo="${j.id}">Undo all</button>`}</div>
-      <div class="rk" style="margin-top:10px">${l.map((x) => `<button type="button" data-vk="${x.kind}" data-vid="${x.id}" data-v="${x.v ? 1 : ''}" style="${x.v ? 'background:var(--green-bg);border-color:var(--green)' : ''}">${esc(x.label)} <span>${x.v ? '✓' : 'tap'}</span></button>`).join('')}</div></section>`; }).join('') || '<section class="card"><p class="empty">No rack, tube rack or syrup case lists in the last 3 days.</p></section>'}`;
+      <div class="rk" style="margin-top:10px">${l.map((x) => `<button type="button" data-vk="${x.kind}" data-vid="${x.id}" data-v="${x.v ? 1 : ''}" style="${x.v ? 'background:var(--green-bg);border-color:var(--green)' : ''}">${esc(x.label)} <span>${x.v ? '✓ ' + esc(x.by || '') : 'tap'}</span></button>`).join('')}</div></section>`; }).join('') || '<section class="card"><p class="empty">No rack, tube rack or syrup case lists in the last 3 days.</p></section>'}`;
   m.onclick = (e) => {
     const b = e.target.closest('[data-vk]');
     if (b) return act(b, () => api('POST', '/api/item-verify', { kind: b.dataset.vk, id: +b.dataset.vid, undo: !!b.dataset.v }), b.dataset.v ? 'Unticked' : 'Verified');
@@ -1047,11 +1048,23 @@ async function viewReport(m) {
   const inDept = (n) => !dept || (r.people.find((p) => p.name === n) || {}).dept === dept;
   const syrup = r.syrup.filter((c) => inDept(c.name)), rackGroups = {};
   for (const x of r.racks.filter((x) => inDept(x.name))) (rackGroups[x.name + '|' + x.task_code] ||= { name: x.name, code: x.task_code, list: [] }).list.push(x);
-  const ok = (v) => v ? ' <span style="color:var(--green)">✓</span>' : '';
-  m.insertAdjacentHTML('beforeend', `<section class="card"><h2>Syrup cases set · ${syrup.length}</h2>${syrup.length ? `<div class="scroll"><table><tr><th>Employee</th><th>Syrup case</th><th class="rs">Rack no.</th><th>Time</th></tr>
-      ${syrup.map((c) => `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.case_name)}${ok(c.verified_at)}</td><td class="rs"><b>${esc(c.rack_no)}</b></td><td>${fmtTime(c.at)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No syrup cases entered on this day.</p>'}
-      <p class="sub" style="margin:8px 0 0">✓ = verified by Arun.</p></section>
-    <section class="card"><h2>Rack numbers set</h2>${Object.values(rackGroups).map((g) => `<div class="bill"><div class="no" style="min-width:110px;font-size:16px">${esc(g.name)}</div><div class="info" style="color:var(--text)"><b>${g.code === 'Q' ? 'Tube racks' : 'Racks'} · ${g.list.length}</b><br>${g.list.map((x) => esc(x.rack_no) + ok(x.verified_at)).join(', ')}</div></div>`).join('') || '<p class="empty">No rack numbers entered on this day.</p>'}</section>`);
+  const ok = (x) => x.verified_at ? ` <span style="color:var(--green)" title="Verified">✓ ${esc(x.verified_by_name || '')}</span>` : '';
+  m.insertAdjacentHTML('beforeend', `<section class="card" id="setlists"><div class="row"><h2 class="grow" style="margin:0 0 10px">Syrup cases set · ${syrup.length}</h2><button class="btn green small" id="setprint">🖨 Print syrup & racks</button></div>${syrup.length ? `<div class="scroll"><table><tr><th>Employee</th><th>Syrup case</th><th class="rs">Rack no.</th><th>Time</th></tr>
+      ${syrup.map((c) => `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.case_name)}${ok(c)}</td><td class="rs"><b>${esc(c.rack_no)}</b></td><td>${fmtTime(c.at)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No syrup cases entered on this day.</p>'}
+      <p class="sub" style="margin:8px 0 0">✓ = verified (name of who verified).</p></section>
+    <section class="card" id="racklists"><h2>Rack numbers set</h2>${Object.values(rackGroups).map((g) => `<div class="bill"><div class="no" style="min-width:110px;font-size:16px">${esc(g.name)}</div><div class="info" style="color:var(--text)"><b>${g.code === 'Q' ? 'Tube racks' : 'Racks'} · ${g.list.length}</b><br>${g.list.map((x) => esc(x.rack_no) + ok(x)).join(', ')}</div></div>`).join('') || '<p class="empty">No rack numbers entered on this day.</p>'}</section>`);
+  $('#setprint').onclick = () => {
+    const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to print', true);
+    const rows = syrup.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.case_name)}</td><td class="rs"><b>${esc(c.rack_no)}</b></td><td>${fmtTime(c.at)}</td><td>${c.verified_at ? '✓ ' + esc(c.verified_by_name || '') : ''}</td></tr>`).join('');
+    const racks = Object.values(rackGroups).map((g) => `<tr><td>${esc(g.name)}</td><td>${g.code === 'Q' ? 'Tube racks' : 'Racks'}</td><td class="rs">${g.list.length}</td><td>${g.list.map((x) => esc(x.rack_no) + (x.verified_at ? '✓' : '')).join(', ')}</td></tr>`).join('');
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Syrup and racks ${day}</title><style>
+      body { font: 12px system-ui, sans-serif; margin: 18px; color: #000; } h1 { font-size: 18px; margin: 0; } h2 { font-size: 14px; margin: 16px 0 6px; } p { margin: 3px 0 10px; }
+      table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid #555; padding: 5px 6px; text-align: left; } th { background: #eee; } .rs { text-align: right; } @page { size: A4; margin: 12mm; }</style></head><body>
+      <h1>Vrinda Medical Agencies</h1><p>Syrup cases and racks set · ${long}${dept ? ' · ' + esc(dept) : ''}</p>
+      <h2>Syrup cases set · ${syrup.length}</h2>${syrup.length ? `<table><tr><th>Employee</th><th>Syrup case</th><th class="rs">Rack no.</th><th>Time</th><th>Verified</th></tr>${rows}</table>` : '<p>None.</p>'}
+      <h2>Rack numbers set</h2>${racks ? `<table><tr><th>Employee</th><th>Type</th><th class="rs">Count</th><th>Rack numbers (✓ = verified)</th></tr>${racks}</table>` : '<p>None.</p>'}</body></html>`);
+    w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
+  };
   $('#repday').onchange = (e) => { filters.repDay = e.target.value; loadTab(); };
   m.querySelectorAll('[data-dept]').forEach((b) => { b.onclick = () => { filters.repDept = b.dataset.dept; loadTab(); }; });
   $('#repprint').onclick = () => {

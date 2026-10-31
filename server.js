@@ -475,6 +475,12 @@ async function attDecision(req, res, u, table) {
   send(res, 200, { ok: true });
 }
 
+// SONU verifies racks, tube racks and syrup cases like ARUN (owner, 2026-10-31).
+migrate('2026-10-31-sonu-verify-items', () => {
+  db.exec('ALTER TABLE users ADD COLUMN can_verify_items INTEGER NOT NULL DEFAULT 0');
+  db.prepare("UPDATE users SET can_verify_items = 1 WHERE username IN ('sonu', 'arun')").run();
+});
+
 // ---------- helpers ----------
 // Adds .cases (syrup case name + rack) to work rows of the Syrup cases task.
 function withCases(rows) {
@@ -482,13 +488,13 @@ function withCases(rows) {
   const ids = rows.filter((r) => r.task_code === 'O').map((r) => r.id);
   if (!ids.length) return rows;
   const by = {};
-  for (const c of db.prepare(`SELECT id, entry_id, case_name, rack_no, at, verified_at FROM syrup_cases WHERE entry_id IN (${ids.map(() => '?').join(',')}) ORDER BY CAST(rack_no AS INTEGER), rack_no, id`).all(...ids)) (by[c.entry_id] ||= []).push(c);
+  for (const c of db.prepare(`SELECT c.id, c.entry_id, c.case_name, c.rack_no, c.at, c.verified_at, v.name AS verified_by_name FROM syrup_cases c LEFT JOIN users v ON v.id = c.verified_by WHERE c.entry_id IN (${ids.map(() => '?').join(',')}) ORDER BY CAST(c.rack_no AS INTEGER), c.rack_no, c.id`).all(...ids)) (by[c.entry_id] ||= []).push(c);
   for (const r of rows) if (r.task_code === 'O') r.cases = by[r.id] || [];
   return rows;
 }
 // Adds .racks (rack numbers, lowest first) to work rows of the Rack Setting task.
 const RACK_TASKS = ['L', 'Q']; // Rack Setting, Tube rack setting
-const rackList = (entryId) => db.prepare('SELECT id, rack_no, verified_at FROM rack_sets WHERE entry_id = ? ORDER BY CAST(rack_no AS INTEGER), rack_no').all(entryId);
+const rackList = (entryId) => db.prepare('SELECT r.id, r.rack_no, r.verified_at, v.name AS verified_by_name FROM rack_sets r LEFT JOIN users v ON v.id = r.verified_by WHERE r.entry_id = ? ORDER BY CAST(r.rack_no AS INTEGER), r.rack_no').all(entryId);
 function withRacks(rows) {
   for (const r of rows) if (RACK_TASKS.includes(r.task_code)) r.racks = rackList(r.id);
   return rows;
@@ -581,9 +587,9 @@ function dailyReport(date) {
   }
   for (const p of Object.values(people)) { p.breakMin = Math.round(p.breakMin); p.transportMin = Math.round(p.transportMin); p.checked = Math.round(p.checked); }
   // Every syrup case and rack number entered that day, with who entered it.
-  const syrup = db.prepare(`SELECT c.case_name, c.rack_no, c.at, c.verified_at, x.name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id JOIN users x ON x.id = e.start_by
+  const syrup = db.prepare(`SELECT c.case_name, c.rack_no, c.at, c.verified_at, v.name AS verified_by_name, x.name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id JOIN users x ON x.id = e.start_by LEFT JOIN users v ON v.id = c.verified_by
     WHERE c.at >= ? AND c.at < ? ORDER BY x.name, CAST(c.rack_no AS INTEGER), c.rack_no`).all(from, to);
-  const racks = db.prepare(`SELECT x.name, e.task_code, r.rack_no, r.verified_at FROM rack_sets r JOIN entries e ON e.id = r.entry_id JOIN users x ON x.id = e.start_by
+  const racks = db.prepare(`SELECT x.name, e.task_code, r.rack_no, r.verified_at, v.name AS verified_by_name FROM rack_sets r JOIN entries e ON e.id = r.entry_id JOIN users x ON x.id = e.start_by LEFT JOIN users v ON v.id = r.verified_by
     WHERE r.at >= ? AND r.at < ? ORDER BY x.name, e.task_code, CAST(r.rack_no AS INTEGER), r.rack_no`).all(from, to);
   return { date, syrup, racks, totalPrep, totalChecked: inc.checked, people: Object.values(people).sort((a, b) => b.items - a.items || b.checked - a.checked || a.name.localeCompare(b.name)) };
 }
@@ -663,7 +669,7 @@ const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Digits only: below 15000 is a challan (7656 -> CA007656),
 // otherwise 5 digits: below 50000 an R bill (15345 -> R015345), 50000 and up a T bill (50810 -> T050810).
 const padBillNo = (no) => no.replace(/^\d{1,5}$/, (d) => (Number(d) < 1 ? d : Number(d) < 15000 ? 'CA' + d.padStart(6, '0') : d.length === 5 ? (Number(d) < 50000 ? 'R0' : 'T0') + d : d)).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
-const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_prep: !!u.can_prep, can_alldone: !!u.can_alldone, can_shop: !u.is_admin && !shopExcluded(u.name), verify_codes: (u.verify_codes || '').split(',').filter(Boolean), active: !!u.active });
+const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_prep: !!u.can_prep, can_verify_items: !!u.can_verify_items, can_alldone: !!u.can_alldone, can_shop: !u.is_admin && !shopExcluded(u.name), verify_codes: (u.verify_codes || '').split(',').filter(Boolean), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
 function billRows(where = '', params = []) {
@@ -1218,7 +1224,7 @@ const routes = {
 
   // Verify Items (Arun, owners): Rack Setting, Tube rack setting and Syrup cases jobs of the last 3 days with every rack / case.
   'GET /api/item-verify': async (req, res, u) => {
-    if (!canReview(u)) fail(403, 'Not allowed');
+    if (!canReview(u) && !u.can_verify_items) fail(403, 'Not allowed');
     const jobs = db.prepare(`SELECT e.id, e.task_code, e.start_at, e.end_at, e.verified_at, t.name AS task_name, su.name AS start_by_name, vu.name AS verified_by_name FROM entries e
       JOIN tasks t ON t.code = e.task_code LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users vu ON vu.id = e.verified_by
       WHERE e.bill_id IS NULL AND e.task_code IN ('L', 'Q', 'O') AND e.start_at >= ? ORDER BY e.start_at DESC`).all(new Date(Date.now() - 3 * 86400e3).toISOString());
@@ -1227,7 +1233,7 @@ const routes = {
   },
   // Verify (or undo) one rack / case, or every item of a job. When all items of a finished job are verified, the job is verified too.
   'POST /api/item-verify': async (req, res, u) => {
-    if (!canReview(u)) fail(403, 'Not allowed');
+    if (!canReview(u) && !u.can_verify_items) fail(403, 'Not allowed');
     const { kind, id, entry_id, undo } = await readBody(req);
     const t = undo ? null : now(), by = undo ? null : u.id;
     let entry = entry_id;
