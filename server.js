@@ -606,6 +606,12 @@ migrate('2026-10-31-racks-like-syrup', () => {
     DELETE FROM rack_sets;`);
 });
 
+// Party name and bill value from the daily Marg REPORT.XLS (owner, 2026-10-31): matched to bills by bill number.
+migrate('2026-10-31-bill-parties', () => {
+  db.exec(`CREATE TABLE bill_parties (bill_no TEXT PRIMARY KEY, party TEXT NOT NULL DEFAULT '', area TEXT NOT NULL DEFAULT '', amount REAL,
+    bill_date TEXT NOT NULL DEFAULT '', uploaded_at TEXT NOT NULL, uploaded_by INTEGER)`);
+});
+
 // ---------- helpers ----------
 // Adds .cases (syrup case name + rack) to work rows of the Syrup cases task.
 function withCases(rows) {
@@ -801,7 +807,8 @@ const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_ad
 
 // Full status of bills: one row per bill with its stage entries attached.
 function billRows(where = '', params = []) {
-  const bills = db.prepare(`SELECT b.*, u.name AS created_by_name FROM bills b LEFT JOIN users u ON u.id = b.created_by ${where} ORDER BY b.id DESC`).all(...params);
+  const bills = db.prepare(`SELECT b.*, u.name AS created_by_name, bp.party, bp.area AS party_area, bp.amount FROM bills b LEFT JOIN users u ON u.id = b.created_by
+    LEFT JOIN bill_parties bp ON bp.bill_no = b.bill_no ${where} ORDER BY b.id DESC`).all(...params);
   if (!bills.length) return [];
   const ids = bills.map((b) => b.id);
   const entries = db.prepare(`
@@ -941,6 +948,29 @@ const routes = {
     if (p !== null && !(Number.isInteger(p) && p >= 1 && p <= 20)) fail(400, 'Points must be 1 to 20');
     db.prepare('UPDATE entries SET points = ? WHERE id = ?').run(p, e.id);
     send(res, 200, { ok: true, points: p });
+  },
+  // Daily REPORT.XLS: party name and amount per bill number. New rows replace the old ones for the same bill no.
+  'POST /api/bill-parties/upload': async (req, res, u) => {
+    if (!u.is_admin && !u.can_proxy) fail(403, 'Owner or supervisor only');
+    const { rows } = await readBody(req, 10e6);
+    if (!Array.isArray(rows) || !rows.length) fail(400, 'No bills found in the file');
+    const t = now(); let saved = 0;
+    const ins = db.prepare(`INSERT INTO bill_parties (bill_no, party, area, amount, bill_date, uploaded_at, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(bill_no) DO UPDATE SET party = excluded.party, area = excluded.area, amount = excluded.amount, bill_date = excluded.bill_date,
+      uploaded_at = excluded.uploaded_at, uploaded_by = excluded.uploaded_by`);
+    db.exec('BEGIN');
+    try {
+      for (const r of rows) {
+        const no = padBillNo(String(r && r.bill_no || '').replace(/\s+/g, '').toUpperCase());
+        if (!BILL_NO.test(no)) continue;
+        const amt = Number(r.amount);
+        ins.run(no, String(r.party || '').slice(0, 120), String(r.area || '').slice(0, 120), Number.isFinite(amt) ? amt : null, String(r.date || '').slice(0, 20), t, u.id);
+        saved++;
+      }
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    const matched = db.prepare('SELECT COUNT(*) AS n FROM bills b JOIN bill_parties p ON p.bill_no = b.bill_no WHERE p.uploaded_at = ?').get(t).n;
+    send(res, 200, { ok: true, saved, matched });
   },
   // Debtors: upload replaces every day found in the file; the rest of the history stays.
   'POST /api/debtors/upload': async (req, res, u) => {
@@ -1508,7 +1538,7 @@ const routes = {
     const where = []; const params = [];
     if (q.get('from')) { where.push('b.created_at >= ?'); params.push(q.get('from')); }
     if (q.get('to')) { where.push('b.created_at < ?'); params.push(q.get('to')); }
-    if (q.get('search')) { where.push('b.bill_no LIKE ?'); params.push('%' + q.get('search') + '%'); }
+    if (q.get('search')) { where.push('(b.bill_no LIKE ? OR bp.party LIKE ?)'); params.push('%' + q.get('search') + '%', '%' + q.get('search') + '%'); }
     send(res, 200, { stages: stages(), bills: billRows(where.length ? 'WHERE ' + where.join(' AND ') : '', params) });
   },
   'GET /api/admin/work': async (req, res, u, q) => {
