@@ -481,6 +481,11 @@ migrate('2026-10-31-sonu-verify-items', () => {
   db.prepare("UPDATE users SET can_verify_items = 1 WHERE username IN ('sonu', 'arun')").run();
 });
 
+// Computer team updates each syrup case's rack in Marg and presses Entered (owner, 2026-10-31).
+migrate('2026-10-31-marg-entered', () => {
+  db.exec('ALTER TABLE syrup_cases ADD COLUMN marg_by INTEGER REFERENCES users(id); ALTER TABLE syrup_cases ADD COLUMN marg_at TEXT;');
+});
+
 // ---------- helpers ----------
 // Adds .cases (syrup case name + rack) to work rows of the Syrup cases task.
 function withCases(rows) {
@@ -587,7 +592,7 @@ function dailyReport(date) {
   }
   for (const p of Object.values(people)) { p.breakMin = Math.round(p.breakMin); p.transportMin = Math.round(p.transportMin); p.checked = Math.round(p.checked); }
   // Every syrup case and rack number entered that day, with who entered it.
-  const syrup = db.prepare(`SELECT c.case_name, c.rack_no, c.at, c.verified_at, v.name AS verified_by_name, x.name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id JOIN users x ON x.id = e.start_by LEFT JOIN users v ON v.id = c.verified_by
+  const syrup = db.prepare(`SELECT c.case_name, c.rack_no, c.at, c.verified_at, v.name AS verified_by_name, c.marg_at, mg.name AS marg_by_name, x.name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id JOIN users x ON x.id = e.start_by LEFT JOIN users v ON v.id = c.verified_by LEFT JOIN users mg ON mg.id = c.marg_by
     WHERE c.at >= ? AND c.at < ? ORDER BY x.name, CAST(c.rack_no AS INTEGER), c.rack_no`).all(from, to);
   const racks = db.prepare(`SELECT x.name, e.task_code, r.rack_no, r.verified_at, v.name AS verified_by_name FROM rack_sets r JOIN entries e ON e.id = r.entry_id JOIN users x ON x.id = e.start_by LEFT JOIN users v ON v.id = r.verified_by
     WHERE r.at >= ? AND r.at < ? ORDER BY x.name, e.task_code, CAST(r.rack_no AS INTEGER), r.rack_no`).all(from, to);
@@ -669,7 +674,7 @@ const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Digits only: below 15000 is a challan (7656 -> CA007656),
 // otherwise 5 digits: below 50000 an R bill (15345 -> R015345), 50000 and up a T bill (50810 -> T050810).
 const padBillNo = (no) => no.replace(/^\d{1,5}$/, (d) => (Number(d) < 1 ? d : Number(d) < 15000 ? 'CA' + d.padStart(6, '0') : d.length === 5 ? (Number(d) < 50000 ? 'R0' : 'T0') + d : d)).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
-const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_prep: !!u.can_prep, can_verify_items: !!u.can_verify_items, can_alldone: !!u.can_alldone, can_shop: !u.is_admin && !shopExcluded(u.name), verify_codes: (u.verify_codes || '').split(',').filter(Boolean), active: !!u.active });
+const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_prep: !!u.can_prep, can_verify_items: !!u.can_verify_items, dept: u.dept || '', can_alldone: !!u.can_alldone, can_shop: !u.is_admin && !shopExcluded(u.name), verify_codes: (u.verify_codes || '').split(',').filter(Boolean), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
 function billRows(where = '', params = []) {
@@ -1222,6 +1227,19 @@ const routes = {
     send(res, 200, { ok: true });
   },
 
+  // Marg updates: syrup cases (name + rack) waiting for the Computer team to change the rack in Marg, last 7 days.
+  'GET /api/marg-pending': async (req, res, u) => {
+    if (u.dept !== 'Computer' && !u.is_admin) fail(403, 'Not allowed');
+    send(res, 200, db.prepare(`SELECT c.id, c.case_name, c.rack_no, c.at, x.name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id JOIN users x ON x.id = e.start_by
+      WHERE c.marg_at IS NULL AND c.at >= ? ORDER BY c.id`).all(new Date(Date.now() - 7 * 86400e3).toISOString()));
+  },
+  'POST /api/marg-done': async (req, res, u) => {
+    if (u.dept !== 'Computer' && !u.is_admin) fail(403, 'Not allowed');
+    const { id } = await readBody(req);
+    const r = db.prepare('UPDATE syrup_cases SET marg_by = ?, marg_at = ? WHERE id = ? AND marg_at IS NULL').run(u.id, now(), id);
+    if (!r.changes) fail(400, 'Already entered by someone else');
+    send(res, 200, { ok: true });
+  },
   // Verify Items (Arun, owners): Rack Setting, Tube rack setting and Syrup cases jobs of the last 3 days with every rack / case.
   'GET /api/item-verify': async (req, res, u) => {
     if (!canReview(u) && !u.can_verify_items) fail(403, 'Not allowed');

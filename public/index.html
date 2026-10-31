@@ -117,6 +117,8 @@
   .rk { display: flex; flex-wrap: wrap; gap: 6px; }
   .rk button { border: 1.5px solid var(--primary); background: var(--card); color: var(--text); border-radius: 99px; padding: 6px 12px; font: 700 16px ui-monospace, monospace; cursor: pointer; }
   .rk button span { color: var(--muted); font-size: 12px; margin-left: 2px; }
+  @keyframes margflash { 0%, 100% { border-color: var(--red); box-shadow: 0 0 0 3px var(--red-bg); } 50% { border-color: var(--amber); box-shadow: 0 0 0 6px var(--amber-bg); } }
+  .margflash { border: 2px solid var(--red); animation: margflash 1.2s ease-in-out infinite; }
   #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; display: none; z-index: 10; max-width: 90vw; }
   #updating { position: fixed; left: 0; right: 0; top: 0; background: #9a6700; color: #fff; padding: 12px 16px; text-align: center; font-weight: 600; z-index: 20; }
   #toast.err { background: var(--red); color: #fff; }
@@ -265,7 +267,7 @@ function tabs() {
   return t;
 }
 function render() {
-  clearInterval(refreshTimer);
+  clearInterval(refreshTimer); clearInterval(margTimer);
   if (!state.me) return renderLogin();
   const myCodes = state.me.is_admin ? 'Owner' : [state.me.is_manager ? 'Manager' : '', ...state.me.tasks].filter(Boolean).join(', ');
   $('#app').innerHTML = `
@@ -275,7 +277,7 @@ function render() {
       <button class="btn ghost small" id="lo">Log out</button></header>
     <div class="sections">${sections().map(([k, l]) => `<button data-section="${k}" class="${state.section === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <nav>${tabs().map(([k, l]) => `<button data-tab="${k}" class="${state.tab === k ? 'on' : ''}">${l}</button>`).join('')}</nav>
-    <main><div id="fixbar"></div><div id="main"></div></main>`;
+    <main><div id="margbar"></div><div id="fixbar"></div><div id="main"></div></main>`;
   $('nav').onclick = (e) => { const k = e.target.dataset.tab; if (k) { state.tab = k; render(); } };
   $('.sections').onclick = (e) => {
     const k = e.target.dataset.section; if (!k || k === state.section) return;
@@ -285,6 +287,7 @@ function render() {
   $('#lo').onclick = async () => { await api('POST', '/api/logout'); state.me = null; render(); };
   $('#pw').onclick = changePassword;
   loadTab();
+  if (state.me.dept === 'Computer') { margBar(); margTimer = setInterval(margBar, 20000); }
   if (['all', 'other', 'status', 'final', 'proxy', 'prep', 'quick', 'board', 'attendance'].includes(state.tab)) refreshTimer = setInterval(() => { if (!document.querySelector('input:focus, select:focus') && !attBusy) loadTab(); }, 15000);
 }
 async function changePassword() {
@@ -1049,19 +1052,19 @@ async function viewReport(m) {
   const syrup = r.syrup.filter((c) => inDept(c.name)), rackGroups = {};
   for (const x of r.racks.filter((x) => inDept(x.name))) (rackGroups[x.name + '|' + x.task_code] ||= { name: x.name, code: x.task_code, list: [] }).list.push(x);
   const ok = (x) => x.verified_at ? ` <span style="color:var(--green)" title="Verified">✓ ${esc(x.verified_by_name || '')}</span>` : '';
-  m.insertAdjacentHTML('beforeend', `<section class="card" id="setlists"><div class="row"><h2 class="grow" style="margin:0 0 10px">Syrup cases set · ${syrup.length}</h2><button class="btn green small" id="setprint">🖨 Print syrup & racks</button></div>${syrup.length ? `<div class="scroll"><table><tr><th>Employee</th><th>Syrup case</th><th class="rs">Rack no.</th><th>Time</th></tr>
-      ${syrup.map((c) => `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.case_name)}${ok(c)}</td><td class="rs"><b>${esc(c.rack_no)}</b></td><td>${fmtTime(c.at)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No syrup cases entered on this day.</p>'}
+  m.insertAdjacentHTML('beforeend', `<section class="card" id="setlists"><div class="row"><h2 class="grow" style="margin:0 0 10px">Syrup cases set · ${syrup.length}</h2><button class="btn green small" id="setprint">🖨 Print syrup & racks</button></div>${syrup.length ? `<div class="scroll"><table><tr><th>Employee</th><th>Syrup case</th><th class="rs">Rack no.</th><th>Time</th><th>Marg updated</th></tr>
+      ${syrup.map((c) => `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.case_name)}${ok(c)}</td><td class="rs"><b>${esc(c.rack_no)}</b></td><td>${fmtTime(c.at)}</td><td>${c.marg_at ? `${esc(c.marg_by_name || '')} · ${fmtTime(c.marg_at)}` : '<span class="pill amber">Pending</span>'}</td></tr>`).join('')}</table></div>` : '<p class="empty">No syrup cases entered on this day.</p>'}
       <p class="sub" style="margin:8px 0 0">✓ = verified (name of who verified).</p></section>
     <section class="card" id="racklists"><h2>Rack numbers set</h2>${Object.values(rackGroups).map((g) => `<div class="bill"><div class="no" style="min-width:110px;font-size:16px">${esc(g.name)}</div><div class="info" style="color:var(--text)"><b>${g.code === 'Q' ? 'Tube racks' : 'Racks'} · ${g.list.length}</b><br>${g.list.map((x) => esc(x.rack_no) + ok(x)).join(', ')}</div></div>`).join('') || '<p class="empty">No rack numbers entered on this day.</p>'}</section>`);
   $('#setprint').onclick = () => {
     const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to print', true);
-    const rows = syrup.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.case_name)}</td><td class="rs"><b>${esc(c.rack_no)}</b></td><td>${fmtTime(c.at)}</td><td>${c.verified_at ? '✓ ' + esc(c.verified_by_name || '') : ''}</td></tr>`).join('');
+    const rows = syrup.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.case_name)}</td><td class="rs"><b>${esc(c.rack_no)}</b></td><td>${fmtTime(c.at)}</td><td>${c.verified_at ? '✓ ' + esc(c.verified_by_name || '') : ''}</td><td>${c.marg_at ? esc(c.marg_by_name || '') + ' ' + fmtTime(c.marg_at) : 'Pending'}</td></tr>`).join('');
     const racks = Object.values(rackGroups).map((g) => `<tr><td>${esc(g.name)}</td><td>${g.code === 'Q' ? 'Tube racks' : 'Racks'}</td><td class="rs">${g.list.length}</td><td>${g.list.map((x) => esc(x.rack_no) + (x.verified_at ? '✓' : '')).join(', ')}</td></tr>`).join('');
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Syrup and racks ${day}</title><style>
       body { font: 12px system-ui, sans-serif; margin: 18px; color: #000; } h1 { font-size: 18px; margin: 0; } h2 { font-size: 14px; margin: 16px 0 6px; } p { margin: 3px 0 10px; }
       table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid #555; padding: 5px 6px; text-align: left; } th { background: #eee; } .rs { text-align: right; } @page { size: A4; margin: 12mm; }</style></head><body>
       <h1>Vrinda Medical Agencies</h1><p>Syrup cases and racks set · ${long}${dept ? ' · ' + esc(dept) : ''}</p>
-      <h2>Syrup cases set · ${syrup.length}</h2>${syrup.length ? `<table><tr><th>Employee</th><th>Syrup case</th><th class="rs">Rack no.</th><th>Time</th><th>Verified</th></tr>${rows}</table>` : '<p>None.</p>'}
+      <h2>Syrup cases set · ${syrup.length}</h2>${syrup.length ? `<table><tr><th>Employee</th><th>Syrup case</th><th class="rs">Rack no.</th><th>Time</th><th>Verified</th><th>Marg updated</th></tr>${rows}</table>` : '<p>None.</p>'}
       <h2>Rack numbers set</h2>${racks ? `<table><tr><th>Employee</th><th>Type</th><th class="rs">Count</th><th>Rack numbers (✓ = verified)</th></tr>${racks}</table>` : '<p>None.</p>'}</body></html>`);
     w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
   };
@@ -1247,6 +1250,20 @@ async function viewFixes(m) {
       ${f.resolved_at ? '' : `<button class="btn ghost small" data-close="${f.id}">Close</button>`}</div>`).join('') || '<p class="empty">No requests yet.</p>'}
     </section>`;
   m.onclick = (e) => { const c = e.target.closest('button[data-close]'); if (c) act(c, () => api('POST', '/api/fixes/done', { id: +c.dataset.close }), 'Closed'); };
+}
+// Computer team: flashing list of syrup cases whose rack must be changed in Marg, each with an Entered button.
+let margTimer;
+async function margBar() {
+  const bar = $('#margbar'); if (!bar) return;
+  let list; try { list = await api('GET', '/api/marg-pending'); } catch { return; }
+  bar.innerHTML = list.length ? `<section class="card margflash"><h2 style="margin:0 0 8px">⚠ Change rack in Marg · ${list.length}</h2>
+    ${list.map((c) => `<div class="bill"><div class="info" style="color:var(--text)"><b style="font-size:17px">${esc(c.case_name)}</b> → rack <b style="font-size:17px">${esc(c.rack_no)}</b>
+      <div class="sub" style="margin:0">Set by ${esc(c.name)} · ${fmtFull(c.at)}</div></div><button class="btn green" data-marg="${c.id}">Entered</button></div>`).join('')}</section>` : '';
+  bar.onclick = (e) => {
+    const b = e.target.closest('button[data-marg]'); if (!b) return;
+    b.disabled = true;
+    api('POST', '/api/marg-done', { id: +b.dataset.marg }).then(() => toast('Marked as entered in Marg')).catch((err) => toast(err.message, true)).finally(margBar);
+  };
 }
 async function fixBar() {
   const bar = $('#fixbar'); if (!bar) return;
