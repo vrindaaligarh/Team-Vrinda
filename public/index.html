@@ -245,7 +245,7 @@ function renderLogin() {
 
 // ---------- shell ----------
 // Top-level sections of the Vrinda Medical Agencies dashboard; Bill Tracker holds every tab below. More sections come later.
-const SECTIONS_ALL = [['bills', 'Bill Tracker'], ['debtors', 'Debtors', (me) => me.is_admin], ['attendance', 'Attendance', (me) => me.is_admin || me.username === 'mansi'], ['shop', 'Shop Open/Close', (me) => me.is_admin || me.username === 'mansi']];
+const SECTIONS_ALL = [['bills', 'Bill Tracker'], ['debtors', 'Debtors', (me) => me.is_admin], ['attendance', 'Attendance', (me) => me.is_admin || me.username === 'mansi'], ['shop', 'Shop Open/Close']];
 const sections = () => SECTIONS_ALL.filter(([, , ok]) => !ok || ok(state.me));
 function tabs() {
   if (state.section === 'debtors') return [['debtors', 'Debtors']];
@@ -1631,18 +1631,50 @@ function shopEntryHtml(date, row, names, locked) {
       <div class="row" style="margin:8px 0"><input name="n1" class="grow" list="shopnames" placeholder="${title.replace('Shop ', '').replace(' by', '')} by 1" value="${esc(n[0])}" autocapitalize="characters" autocomplete="off" style="text-transform:uppercase">
       <input name="n2" class="grow" list="shopnames" placeholder="${title.replace('Shop ', '').replace(' by', '')} by 2" value="${esc(n[1])}" autocapitalize="characters" autocomplete="off" style="text-transform:uppercase"></div>
       <div class="row"><button class="btn ${ph === 'opening' ? 'green' : ''}">${btn}</button>
-      <span class="sub" style="margin:0">${p.names ? `Saved by ${esc(p.by || '')}${p.at ? ' · ' + fmtFull(p.at) : ''}` : 'Not saved yet'}</span></div></form>`; };
+      <span class="sub" style="margin:0">${p.names ? `${p.pushed ? 'Pressed by staff, verified' : 'Saved'} by ${esc(p.by || '')}${p.at ? ' · ' + fmtFull(p.at) : ''}` : 'Not saved yet'}</span></div></form>`; };
   return `<section class="card"><h2>${locked ? 'Today · ' : ''}${esc(attFmt(date))}</h2><p class="sub">Two different people for opening and two for closing. Pick from the list or type a name.</p>
     <datalist id="shopnames">${names.map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">${phase('opening', 'Shop opened by', 'Save opening')}${phase('closing', 'Shop closed by', 'Save closing')}</div></section>`;
 }
+// Staff screen: "I opened the shop" / "I closed the shop" for today. 2 people per phase; counts after the owner or Mansi verifies.
+async function viewShopPush(m) {
+  const d = await api('GET', '/api/shop-punch');
+  const card = (ph, title, btn, icon) => {
+    const x = d[ph], mine = x.punches.find((p) => p.mine), names = x.saved && x.saved.length >= 2 ? x.saved : x.punches.length >= 2 ? x.punches.map((p) => p.name) : null;
+    return `<section class="card" style="margin:0"><h2>${title}</h2>
+      ${x.punches.length ? x.punches.map((p) => `<div class="row" style="padding:4px 0"><b class="grow">${esc(attTitle(p.name))}</b><span class="sub" style="margin:0">${fmtTime(p.at)}</span>
+        ${p.verified ? '<span class="pill green">Verified</span>' : '<span class="pill amber">Waiting for verify</span>'}</div>`).join('') : '<p class="sub">Nobody has pressed yet.</p>'}
+      ${mine ? `<div class="qk-done" style="margin-top:10px">You pressed at ${fmtTime(mine.at)}</div>`
+        : names ? `<div class="qk-done" style="margin-top:10px;background:var(--bg);color:var(--muted)">${ph === 'opening' ? 'Opening' : 'Closing'} is done for the day (${esc(names.map(attTitle).join(' and '))})</div>`
+        : `<button class="qk-go" style="width:100%;margin-top:10px;${ph === 'closing' ? 'background:var(--primary)' : ''}" data-push="${ph}">${icon} ${btn}</button>`}</section>`; };
+  m.innerHTML = `<section class="card"><h2>Today · ${esc(attFmt(d.today))}</h2>
+    <p class="sub">Press the button when <b>you</b> open or close the shop. Only 2 people can open and 2 can close each day. It counts after Mansi or the owner verifies.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px">${card('opening', 'Shop opening', 'I opened the shop', '🔓')}${card('closing', 'Shop closing', 'I closed the shop', '🔒')}</div></section>`;
+  m.querySelectorAll('[data-push]').forEach((b) => b.onclick = () => {
+    if (!confirm(b.dataset.push === 'opening' ? 'Did you open the shop today?' : 'Did you close the shop today?')) return;
+    act(b, () => api('POST', '/api/shop-punch', { phase: b.dataset.push }), 'Saved. Waiting for verification.');
+  });
+}
+// Owner / Mansi: pushes waiting for verification, grouped by day and phase, with Verify and Remove.
+function shopWaitingHtml(waiting) {
+  if (!waiting.length) return '';
+  const groups = new Map();
+  for (const p of waiting) { const k = p.date + '|' + p.phase; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); }
+  return `<section class="card" style="border-color:#d29922"><h2>Waiting for verification <span class="count">${groups.size}</span></h2>
+    <p class="sub">Staff pressed these buttons themselves. Press <b>✓ Verify</b> to save them (only verified names count). <b>Remove</b> a wrong one to free the place.</p>
+    ${[...groups.entries()].reverse().map(([k, list]) => { const [date, ph] = k.split('|');
+      return `<div class="bill"><div class="info" style="color:var(--text)"><b>${ph === 'opening' ? 'Opened' : 'Closed'} · ${esc(attFmt(date, { weekday: 'short', day: 'numeric', month: 'short' }))}</b><br>
+        ${list.map((p) => `${esc(attTitle(p.name))} <span class="sub">${fmtTime(p.at)}</span> <button class="btn ghost small del" data-push-remove="${esc(p.name)}" data-date="${date}" data-phase="${ph}">Remove</button>`).join(' &nbsp; ')}</div>
+        <button class="btn green" data-push-verify="${ph}" data-date="${date}">✓ Verify</button></div>`; }).join('')}</section>`;
+}
 async function viewShop(m) {
   const owner = state.me.is_admin;
+  if (!owner && state.me.username !== 'mansi') return viewShopPush(m);
   let saveDate;
   if (!owner) {
     const d = await api('GET', '/api/shop-open');
     saveDate = d.today;
-    m.innerHTML = shopEntryHtml(d.today, d.rows[0], d.names, true) + `<p class="sub">You can enter today's opening and closing. Ask the owner to correct an earlier day.</p>`;
+    m.innerHTML = shopWaitingHtml(d.waiting) + shopEntryHtml(d.today, d.rows[0], d.names, true) + `<p class="sub">You can verify and enter today's opening and closing. Ask the owner to correct an earlier day.</p>`;
   } else {
     if (!filters.shopDate) filters.shopDate = attNow().date;
     const date = saveDate = filters.shopDate, month = date.slice(0, 7), monthly = filters.shopMode === 'monthly';
@@ -1653,6 +1685,7 @@ async function viewShop(m) {
         ${monthly ? `<button class="btn ghost small" data-shop-step="-1">◀</button><input type="month" id="shopmonth" min="${d.start.slice(0, 7)}" max="${today.slice(0, 7)}" value="${month}"><button class="btn ghost small" data-shop-step="1">▶</button>`
           : `<button class="btn ghost small" data-shop-step="-1">◀</button><input type="date" id="shopdate" min="${d.start}" max="${today}" value="${date}"><button class="btn ghost small" data-shop-step="1">▶</button><button class="btn ghost small" id="shoptoday">Today</button>`}
         <span class="grow"></span><button class="btn ghost small" id="shoprefresh">↻ Refresh</button><button class="btn ghost small" id="shopprint">🖨 Print report</button></div></section>
+      ${shopWaitingHtml(d.waiting)}
       ${monthly ? '' : shopEntryHtml(date, row, d.names, false)}
       ${shopSummaryHtml(d.rows, month, monthOver)}
       ${monthly ? `<section class="card"><h2>Day by day</h2><p class="sub">Tap a day to see or correct it.</p>${attTable(['Date', 'Opened by', 'Closed by', 'Saved by'], d.rows.slice().reverse().map((r) => {
@@ -1673,6 +1706,8 @@ async function viewShop(m) {
     $('#shoprefresh').onclick = () => loadTab().then(() => toast('Refreshed'));
     $('#shopprint').onclick = () => shopPrint(d.rows, month, monthOver);
   }
+  m.querySelectorAll('[data-push-verify]').forEach((b) => b.onclick = () => act(b, () => api('POST', '/api/shop-punch/verify', { date: b.dataset.date, phase: b.dataset.pushVerify }), 'Verified and saved'));
+  m.querySelectorAll('[data-push-remove]').forEach((b) => b.onclick = () => { if (confirm('Remove ' + attTitle(b.dataset.pushRemove) + '?')) act(b, () => api('POST', '/api/shop-punch/remove', { date: b.dataset.date, phase: b.dataset.phase, name: b.dataset.pushRemove }), 'Removed'); });
   m.querySelectorAll('form[data-shop-phase]').forEach((f) => f.onsubmit = (e) => {
     e.preventDefault();
     act(f.querySelector('button'), () => api('POST', '/api/shop-open', { date: saveDate, phase: f.dataset.shopPhase, names: [f.n1.value, f.n2.value], revision: +f.dataset.rev }),

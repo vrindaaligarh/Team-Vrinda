@@ -383,6 +383,23 @@ migrate('2026-10-30-shop-open-close', () => {
   }
 });
 const SHOP_START = '2026-10-01';
+// Staff push "I opened / I closed the shop" from their own login (owner, 2026-10-31). At most 2 per phase per day.
+// A push only counts after the owner or MANSI presses Verify: the names are then saved in shop_open_close.
+migrate('2026-10-31-shop-punch', () => {
+  db.exec(`CREATE TABLE shop_punch (date TEXT NOT NULL, phase TEXT NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id), name TEXT NOT NULL,
+    at TEXT NOT NULL, verified_at TEXT, verified_by INTEGER REFERENCES users(id), PRIMARY KEY (date, phase, user_id));`);
+});
+const SHOP_PHASE = { opening: 'Opening', closing: 'Closing' };
+const shopPunches = (where, ...args) => db.prepare(`SELECT p.date, p.phase, p.user_id, p.name, p.at, p.verified_at, v.name AS verified_by FROM shop_punch p
+  LEFT JOIN users v ON v.id = p.verified_by WHERE ${where} ORDER BY p.date, p.phase, p.at`).all(...args);
+// Saves the names of one phase for one day (manual entry or Verify), and marks that phase's pushes as verified.
+function saveShopPhase(date, phase, names, u, extra = {}) {
+  const old = db.prepare('SELECT * FROM shop_open_close WHERE date = ?').get(date), t = now(), data = old ? JSON.parse(old.data) : {};
+  data[phase] = { names, at: t, by: u.name, ...extra };
+  if (old) db.prepare('UPDATE shop_open_close SET data = ?, revision = revision + 1, updated_at = ?, updated_by = ? WHERE date = ?').run(JSON.stringify(data), t, u.id, date);
+  else db.prepare('INSERT INTO shop_open_close (date, data, revision, updated_at, updated_by) VALUES (?, ?, 1, ?, ?)').run(date, JSON.stringify(data), t, u.id);
+  db.prepare('UPDATE shop_punch SET verified_at = ?, verified_by = ? WHERE date = ? AND phase = ? AND verified_at IS NULL').run(t, u.id, date, phase);
+}
 
 // ---------- attendance ----------
 // Same roster and PagarBook name matching as the Attendance tab (public/index.html, ATT_*). Rules start 20 Oct 2026.
@@ -850,7 +867,10 @@ const routes = {
     const rows = db.prepare(`SELECT s.date, s.data, s.revision, s.updated_at, x.name AS updated_by FROM shop_open_close s LEFT JOIN users x ON x.id = s.updated_by
       WHERE ${month ? 's.date LIKE ?' : 's.date = ?'} ORDER BY s.date`).all(month ? month + '-%' : date).map((r) => ({ ...r, data: JSON.parse(r.data) }));
     const names = db.prepare('SELECT name FROM users WHERE active = 1 AND is_admin = 0 ORDER BY name').all().map((x) => x.name.toUpperCase());
-    send(res, 200, { rows, names, today, start: SHOP_START }, { 'Cache-Control': 'no-store' });
+    const punches = month ? shopPunches('p.date LIKE ?', month + '-%') : shopPunches('p.date = ?', date);
+    // Pushes not verified yet, any day (owners see every day; MANSI today only).
+    const waiting = u.is_admin ? shopPunches('p.verified_at IS NULL') : shopPunches('p.verified_at IS NULL AND p.date = ?', today);
+    send(res, 200, { rows, names, today, start: SHOP_START, punches, waiting }, { 'Cache-Control': 'no-store' });
   },
   // Save the opening or the closing pair for one day. revision must match the day as loaded (stops two people overwriting each other).
   'POST /api/shop-open': async (req, res, u) => {
@@ -865,10 +885,51 @@ const routes = {
     if (list[0] === list[1]) fail(400, 'Choose two different people');
     const old = db.prepare('SELECT * FROM shop_open_close WHERE date = ?').get(date);
     if ((old ? old.revision : 0) !== Number(revision)) fail(409, 'Someone saved this day just now. Press Refresh and save again.');
-    const t = now(), data = old ? JSON.parse(old.data) : {};
-    data[phase] = { names: list, at: t, by: u.name };
-    if (old) db.prepare('UPDATE shop_open_close SET data = ?, revision = revision + 1, updated_at = ?, updated_by = ? WHERE date = ? AND revision = ?').run(JSON.stringify(data), t, u.id, date, old.revision);
-    else db.prepare('INSERT INTO shop_open_close (date, data, revision, updated_at, updated_by) VALUES (?, ?, 1, ?, ?)').run(date, JSON.stringify(data), t, u.id);
+    saveShopPhase(date, phase, list, u);
+    send(res, 200, { ok: true });
+  },
+  // Staff: "I opened the shop" / "I closed the shop" for today. Only 2 people per phase; after that, or once verified, it is done for the day.
+  'GET /api/shop-punch': async (req, res, u) => {
+    const today = istToday(), row = db.prepare('SELECT data FROM shop_open_close WHERE date = ?').get(today), data = row ? JSON.parse(row.data) : {};
+    const out = { today };
+    for (const ph of Object.keys(SHOP_PHASE)) {
+      const list = shopPunches('p.date = ? AND p.phase = ?', today, ph);
+      out[ph] = { punches: list.map((p) => ({ name: p.name, at: p.at, mine: p.user_id === u.id, verified: !!p.verified_at })), saved: data[ph] ? data[ph].names : null };
+    }
+    send(res, 200, out, { 'Cache-Control': 'no-store' });
+  },
+  'POST /api/shop-punch': async (req, res, u) => {
+    if (u.is_admin) fail(403, 'Owners verify; staff press these buttons');
+    const { phase } = await readBody(req), today = istToday();
+    if (!SHOP_PHASE[phase]) fail(400, 'Choose opening or closing');
+    const row = db.prepare('SELECT data FROM shop_open_close WHERE date = ?').get(today), saved = row && JSON.parse(row.data)[phase];
+    const list = shopPunches('p.date = ? AND p.phase = ?', today, phase);
+    if (list.some((p) => p.user_id === u.id)) fail(400, `You already pressed ${SHOP_PHASE[phase].toLowerCase()} today`);
+    if (saved && saved.names.length >= 2) fail(400, `${SHOP_PHASE[phase]} is done for the day (${saved.names.join(' and ')})`);
+    if (list.length >= 2) fail(400, `${SHOP_PHASE[phase]} is done for the day (${list.map((p) => p.name).join(' and ')})`);
+    db.prepare('INSERT INTO shop_punch (date, phase, user_id, name, at) VALUES (?, ?, ?, ?, ?)').run(today, phase, u.id, u.name.toUpperCase(), now());
+    send(res, 200, { ok: true });
+  },
+  // Owner / MANSI: Verify saves the pushed names for that day and phase; Remove deletes a wrong push (frees the slot).
+  'POST /api/shop-punch/verify': async (req, res, u) => {
+    if (!canAttendance(u)) fail(403, 'Only the owner and Mansi can verify');
+    const { date, phase } = await readBody(req);
+    if (!u.is_admin && date !== istToday()) fail(403, 'Mansi can verify today only');
+    if (!SHOP_PHASE[phase]) fail(400, 'Choose opening or closing');
+    const list = shopPunches('p.date = ? AND p.phase = ? AND p.verified_at IS NULL', String(date || ''), phase);
+    if (!list.length) fail(400, 'Nothing waiting to verify');
+    const all = shopPunches('p.date = ? AND p.phase = ?', date, phase);
+    db.exec('BEGIN');
+    try { saveShopPhase(date, phase, all.map((p) => p.name), u, { pushed: all.map((p) => ({ name: p.name, at: p.at })) }); db.exec('COMMIT'); }
+    catch (e) { db.exec('ROLLBACK'); throw e; }
+    send(res, 200, { ok: true });
+  },
+  'POST /api/shop-punch/remove': async (req, res, u) => {
+    if (!canAttendance(u)) fail(403, 'Only the owner and Mansi can remove');
+    const { date, phase, name } = await readBody(req);
+    if (!u.is_admin && date !== istToday()) fail(403, 'Mansi can change today only');
+    const r = db.prepare('DELETE FROM shop_punch WHERE date = ? AND phase = ? AND name = ? AND verified_at IS NULL').run(String(date || ''), String(phase || ''), String(name || ''));
+    if (!r.changes) fail(404, 'Push not found (already verified?)');
     send(res, 200, { ok: true });
   },
   'POST /api/bills/edit': async (req, res, u) => {
