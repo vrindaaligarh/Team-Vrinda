@@ -1043,6 +1043,15 @@ async function viewReport(m) {
     <p class="sub" style="margin:10px 0 0">Speed = items per minute while Preparing (bills done together count as one batch). Checked items are split in half when two people check together.
       Racks set = Rack Setting (L), Tube racks = Tube rack setting (Q), Syrup set = Syrup cases (O), Polythene packed = bills marked Packed now, Transport checked = Transport check (P) times.
       Time not punched = gaps between the first and last punch with no bill or work running. Break = Break (T) time. Red: speed below 2, 30+ minutes not punched, break over 45 minutes.</p></section>`;
+  // Syrup cases and rack numbers entered on this day (filtered by the chosen department too).
+  const inDept = (n) => !dept || (r.people.find((p) => p.name === n) || {}).dept === dept;
+  const syrup = r.syrup.filter((c) => inDept(c.name)), rackGroups = {};
+  for (const x of r.racks.filter((x) => inDept(x.name))) (rackGroups[x.name + '|' + x.task_code] ||= { name: x.name, code: x.task_code, list: [] }).list.push(x);
+  const ok = (v) => v ? ' <span style="color:var(--green)">✓</span>' : '';
+  m.insertAdjacentHTML('beforeend', `<section class="card"><h2>Syrup cases set · ${syrup.length}</h2>${syrup.length ? `<div class="scroll"><table><tr><th>Employee</th><th>Syrup case</th><th class="rs">Rack no.</th><th>Time</th></tr>
+      ${syrup.map((c) => `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.case_name)}${ok(c.verified_at)}</td><td class="rs"><b>${esc(c.rack_no)}</b></td><td>${fmtTime(c.at)}</td></tr>`).join('')}</table></div>` : '<p class="empty">No syrup cases entered on this day.</p>'}
+      <p class="sub" style="margin:8px 0 0">✓ = verified by Arun.</p></section>
+    <section class="card"><h2>Rack numbers set</h2>${Object.values(rackGroups).map((g) => `<div class="bill"><div class="no" style="min-width:110px;font-size:16px">${esc(g.name)}</div><div class="info" style="color:var(--text)"><b>${g.code === 'Q' ? 'Tube racks' : 'Racks'} · ${g.list.length}</b><br>${g.list.map((x) => esc(x.rack_no) + ok(x.verified_at)).join(', ')}</div></div>`).join('') || '<p class="empty">No rack numbers entered on this day.</p>'}</section>`);
   $('#repday').onchange = (e) => { filters.repDay = e.target.value; loadTab(); };
   m.querySelectorAll('[data-dept]').forEach((b) => { b.onclick = () => { filters.repDept = b.dataset.dept; loadTab(); }; });
   $('#repprint').onclick = () => {

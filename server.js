@@ -580,7 +580,12 @@ function dailyReport(date) {
     Object.assign(p, { first: new Date(first).toISOString(), last: new Date(last).toISOString(), workMin: Math.round((last - first) / 60000), idleMin: Math.round((last - first - covered) / 60000) });
   }
   for (const p of Object.values(people)) { p.breakMin = Math.round(p.breakMin); p.transportMin = Math.round(p.transportMin); p.checked = Math.round(p.checked); }
-  return { date, totalPrep, totalChecked: inc.checked, people: Object.values(people).sort((a, b) => b.items - a.items || b.checked - a.checked || a.name.localeCompare(b.name)) };
+  // Every syrup case and rack number entered that day, with who entered it.
+  const syrup = db.prepare(`SELECT c.case_name, c.rack_no, c.at, c.verified_at, x.name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id JOIN users x ON x.id = e.start_by
+    WHERE c.at >= ? AND c.at < ? ORDER BY x.name, CAST(c.rack_no AS INTEGER), c.rack_no`).all(from, to);
+  const racks = db.prepare(`SELECT x.name, e.task_code, r.rack_no, r.verified_at FROM rack_sets r JOIN entries e ON e.id = r.entry_id JOIN users x ON x.id = e.start_by
+    WHERE r.at >= ? AND r.at < ? ORDER BY x.name, e.task_code, CAST(r.rack_no AS INTEGER), r.rack_no`).all(from, to);
+  return { date, syrup, racks, totalPrep, totalChecked: inc.checked, people: Object.values(people).sort((a, b) => b.items - a.items || b.checked - a.checked || a.name.localeCompare(b.name)) };
 }
 // Who earned money on one day: [{ name, items, speed, check, total }], biggest first.
 function incentiveEarners(d) {
