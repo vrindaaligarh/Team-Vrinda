@@ -489,7 +489,7 @@ migrate('2026-10-31-marg-entered', () => {
 // Orders section (owner and Ajanta): company master from the owner's orders.xlsx (2026-10-31): name, order frequency, payment due days.
 migrate('2026-10-31-orders', () => {
   db.exec(`CREATE TABLE order_companies (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, category TEXT NOT NULL, due_days INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1);
-    CREATE TABLE orders (id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER NOT NULL REFERENCES order_companies(id), amount REAL NOT NULL,
+    CREATE TABLE orders (id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER REFERENCES order_companies(id), name TEXT NOT NULL DEFAULT '', amount REAL NOT NULL,
       ordered_at TEXT NOT NULL, due_days INTEGER NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, created_by INTEGER REFERENCES users(id));
     CREATE INDEX orders_at ON orders(ordered_at);
     CREATE TABLE order_periods (id INTEGER PRIMARY KEY AUTOINCREMENT, from_date TEXT NOT NULL, to_date TEXT NOT NULL, label TEXT NOT NULL, no_orders INTEGER NOT NULL DEFAULT 0);`);
@@ -964,8 +964,14 @@ const routes = {
     if (!u.is_admin) fail(403, 'Owner only');
     const b = await readBody(req);
     if (b.remove) { db.prepare('DELETE FROM orders WHERE id = ?').run(Number(b.id)); return send(res, 200, { ok: true }); }
-    const c = db.prepare('SELECT * FROM order_companies WHERE id = ?').get(Number(b.company_id));
-    if (!c) fail(400, 'Pick a company from the list');
+    // Manual order (owner, 2026-10-31): any company not in the list, typed with its own due days. Counted in dues, not planned.
+    let c = b.company_id ? db.prepare('SELECT * FROM order_companies WHERE id = ?').get(Number(b.company_id)) : null;
+    if (!c) {
+      const name = String(b.name || '').trim().slice(0, 120), days = Number(b.due_days);
+      if (!name) fail(400, 'Enter the company name');
+      if (!(Number.isInteger(days) && days >= 0 && days <= 180)) fail(400, 'Enter due days (0 to 180)');
+      c = { id: null, name, due_days: days };
+    }
     const amount = Number(b.amount);
     if (!(amount > 0 && amount < 1e9)) fail(400, 'Enter the order amount');
     const at = String(b.ordered_at || '');
@@ -974,9 +980,9 @@ const routes = {
     if (b.id) {
       const o = db.prepare('SELECT * FROM orders WHERE id = ?').get(Number(b.id));
       if (!o) fail(404, 'Order not found');
-      db.prepare('UPDATE orders SET company_id = ?, amount = ?, ordered_at = ?, due_days = ?, note = ? WHERE id = ?')
-        .run(c.id, amount, at, o.company_id === c.id ? o.due_days : c.due_days, note, o.id);
-    } else db.prepare('INSERT INTO orders (company_id, amount, ordered_at, due_days, note, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)').run(c.id, amount, at, c.due_days, note, now(), u.id);
+      db.prepare('UPDATE orders SET company_id = ?, name = ?, amount = ?, ordered_at = ?, due_days = ?, note = ? WHERE id = ?')
+        .run(c.id, c.id ? '' : c.name, amount, at, c.id && o.company_id === c.id ? o.due_days : c.due_days, note, o.id);
+    } else db.prepare('INSERT INTO orders (company_id, name, amount, ordered_at, due_days, note, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(c.id, c.id ? '' : c.name, amount, at, c.due_days, note, now(), u.id);
     send(res, 200, { ok: true });
   },
   'POST /api/order-companies': async (req, res, u) => {

@@ -946,7 +946,7 @@ function orderPlan(d, horizon) {
 async function viewOrders(m) {
   const d = orderData = await api('GET', '/api/orders');
   const horizon = filters.oDays || 15, P = orderPlan(d, horizon), today = d.today;
-  const coName = Object.fromEntries(d.companies.map((c) => [c.id, c.name]));
+  const coName = Object.fromEntries(d.companies.map((c) => [c.id, c.name])), oName = (o) => o.company_id ? coName[o.company_id] : o.name + ' (manual)';
   const tags = (ps) => ps.map((p) => `<span class="pill ${p.no_orders ? 'red' : 'purple'}">${esc(p.label)}</span>`).join(' ');
   const max = Math.max(1, ...P.days.map((x) => x.placed.reduce((n, o) => n + o.amount, 0) + x.planned.reduce((n, o) => n + o.amount, 0)));
   const sum = (l) => l.reduce((n, o) => n + o.amount, 0);
@@ -964,7 +964,7 @@ async function viewOrders(m) {
     return `<tr data-oday="${x.date}" class="click ${x.date === today ? 'pick' : ''}" style="${we ? 'color:var(--muted)' : ''}"><td><b>${oFmt(x.date)}</b>${x.date === today ? ' <span class="pill green">Today</span>' : ''} ${tags(x.periods)}</td>
       <td class="rs">${pl ? rupees(pl) + ` <small style="color:var(--muted)">(${x.placed.length})</small>` : '—'}</td><td class="rs">${pn ? rupees(pn) + ` <small style="color:var(--muted)">(${x.planned.length})</small>` : x.planned.length ? `<small style="color:var(--muted)">${x.planned.length} new</small>` : '—'}</td>
       <td class="rs"><b>${pl + pn ? rupees(pl + pn) : '—'}</b></td><td style="width:22%"><div class="row" style="gap:0;flex-wrap:nowrap"><div class="dbar" style="width:${(pl / max * 100).toFixed(1)}%;opacity:1;border-radius:3px 0 0 3px"></div><div class="dbar" style="width:${(pn / max * 100).toFixed(1)}%;opacity:.35;border-radius:0 3px 3px 0"></div></div></td></tr>
-      ${open ? `<tr class="detail"><td colspan="5">${x.placed.map((o) => `<div>✔ <b>${esc(coName[o.company_id])}</b> · ${rupees(o.amount)} · ordered ${oFmt(o.date)} (${o.due_days} days)</div>`).join('')}
+      ${open ? `<tr class="detail"><td colspan="5">${x.placed.map((o) => `<div>✔ <b>${esc(oName(o))}</b> · ${rupees(o.amount)} · ordered ${oFmt(o.date)} (${o.due_days} days)</div>`).join('')}
         ${x.planned.map((o) => `<div class="sub" style="margin:0">◌ ${esc(o.company)} · ${o.amount ? 'about ' + rupees(o.amount) : 'no past orders'} · if ordered ${oFmt(o.date)}</div>`).join('') || (x.placed.length ? '' : 'Nothing due.')}</td></tr>` : ''}`;
   };
   const coRow = (c) => {
@@ -983,8 +983,9 @@ async function viewOrders(m) {
       <span class="pill gray" style="font-size:14px;padding:6px 12px">Next ${horizon} days: <b>${rupees(tot(horizon))}</b></span></div>
     <section class="card"><h2>New order</h2>
       <form id="oform" class="row" autocomplete="off" style="align-items:flex-end">
-        <label class="grow" style="min-width:240px"><small style="color:var(--muted)">Company</small><br><input id="oco" list="ocolist" placeholder="Type company name" style="width:100%" value="${esc(filters.oPick ? coName[filters.oPick] || '' : '')}"></label>
+        <label class="grow" style="min-width:240px"><small style="color:var(--muted)">Company</small><br><input id="oco" list="ocolist" placeholder="Pick from list, or type any name" style="width:100%" value="${esc(filters.oPick ? coName[filters.oPick] || '' : '')}"></label>
         <datalist id="ocolist">${d.companies.filter((c) => c.active).map((c) => `<option value="${esc(c.name)}">`).join('')}</datalist>
+        <label id="odayswrap" hidden><small style="color:var(--muted)">Due days</small><br><input id="odays" type="number" min="0" max="180" placeholder="21" style="width:80px"></label>
         <label><small style="color:var(--muted)">Amount ₹</small><br><input id="oamt" inputmode="decimal" placeholder="0" style="width:140px"></label>
         <label><small style="color:var(--muted)">Date and time</small><br><input id="oat" type="datetime-local" value="${oNow()}"></label>
         <label class="grow" style="min-width:140px"><small style="color:var(--muted)">Note (optional)</small><br><input id="onote" style="width:100%"></label>
@@ -1009,19 +1010,26 @@ async function viewOrders(m) {
         <label class="row" style="gap:4px"><input type="checkbox" id="opno"> No orders</label><button class="btn small">Add</button></form></section>`;
   const info = () => {
     const c = d.companies.find((x) => x.name.toLowerCase() === $('#oco').value.trim().toLowerCase()), at = $('#oat').value;
-    if (!c) return ($('#oinfo').textContent = '');
+    const typed = $('#oco').value.trim();
+    $('#odayswrap').hidden = !!c || !typed;
+    if (!c) {
+      const n = $('#odays').value, day = at.slice(0, 10), due = typed && n !== '' && day ? oDue(day, Number(n)) : '';
+      return ($('#oinfo').innerHTML = typed ? `<b>Manual order</b>: not in your company list. Type the due days; it is counted in the money needed per day.${due ? ` Payment due on <b>${oFmt(due, { weekday: 'long', day: 'numeric', month: 'long' })}</b>` : ''}` : '');
+    }
     const day = at.slice(0, 10), due = day ? oDue(day, c.due_days) : '', ps = due ? P.periodsOn(due) : [], we = day && (oDow(day) === 0 || oDow(day) === 6);
     const pc = P.cos.find((x) => x.id === c.id);
     $('#oinfo').innerHTML = `${esc(FREQ[c.category] ? FREQ[c.category].label : c.category)} · ${c.due_days} days credit${due ? ` → payment due on <b>${oFmt(due, { weekday: 'long', day: 'numeric', month: 'long' })}</b>` : ''}${ps.length ? ` <span class="pill purple">⚠ in ${esc(ps[0].label)}</span>` : ''}${we ? ' <span class="pill red">Weekend: no orders on Sat/Sun</span>' : ''}${pc && pc.avg ? ` · usual order ${rupees(pc.avg)}` : ''}${pc && pc.last ? ` · last ${oFmt(pc.last.date)}` : ''}`;
   };
-  $('#oco').oninput = info; $('#oat').oninput = info; info();
+  $('#oco').oninput = info; $('#oat').oninput = info; $('#odays').oninput = info; info();
   if (filters.oPick) { $('#oamt').focus(); filters.oPick = null; }
   $('#oform').onsubmit = (e) => {
     e.preventDefault();
     const c = d.companies.find((x) => x.name.toLowerCase() === $('#oco').value.trim().toLowerCase()), at = $('#oat').value;
-    if (!c) return toast('Pick a company from the list', true);
+    const name = $('#oco').value.trim();
+    if (!c && !name) return toast('Type the company name', true);
+    if (!c && $('#odays').value === '') return toast('Type the due days for this company', true);
     if (at && [0, 6].includes(oDow(at.slice(0, 10))) && !confirm('This date is a ' + (oDow(at.slice(0, 10)) ? 'Saturday' : 'Sunday') + '. Save anyway?')) return;
-    act(e.submitter, () => api('POST', '/api/orders', { company_id: c.id, amount: $('#oamt').value.replace(/,/g, ''), ordered_at: at, note: $('#onote').value }), 'Order saved');
+    act(e.submitter, () => api('POST', '/api/orders', { company_id: c ? c.id : null, name, due_days: c ? undefined : Number($('#odays').value), amount: $('#oamt').value.replace(/,/g, ''), ordered_at: at, note: $('#onote').value }), 'Order saved');
   };
   m.querySelectorAll('[data-odays]').forEach((b) => b.onclick = () => { filters.oDays = +b.dataset.odays; loadTab(); });
   m.querySelectorAll('[data-oshow]').forEach((b) => b.onclick = () => { filters.oShow = b.dataset.oshow; loadTab(); });
@@ -1035,7 +1043,7 @@ async function viewOrders(m) {
 
 async function viewOrderList(m) {
   const d = await api('GET', '/api/orders');
-  const coName = Object.fromEntries(d.companies.map((c) => [c.id, c.name]));
+  const coName = Object.fromEntries(d.companies.map((c) => [c.id, c.name])), oName = (o) => o.company_id ? coName[o.company_id] : o.name;
   const months = {};
   for (const o of d.orders) { const k = o.ordered_at.slice(0, 7); months[k] = (months[k] || 0) + o.amount; }
   m.innerHTML = `<section class="card"><h2>All orders · last 150 days · ${d.orders.length}</h2>
@@ -1043,14 +1051,14 @@ async function viewOrderList(m) {
     <input id="olq" class="billsearch" placeholder="Search company" value="${esc(filters.olq || '')}">
     <div class="scroll"><table><tr><th>Ordered</th><th>Company</th><th class="rs">Amount</th><th>Payment due</th><th>Note</th><th>Entered by</th><th></th></tr>
     ${d.orders.map((o) => filters.oEdit === o.id
-      ? `<tr><td><input type="datetime-local" id="oe-at" value="${o.ordered_at}"></td><td><b>${esc(coName[o.company_id])}</b></td><td><input id="oe-amt" value="${o.amount}" inputmode="decimal" style="width:120px"></td><td>${o.due_days} days</td><td><input id="oe-note" value="${esc(o.note)}"></td><td></td>
-        <td><button class="btn small green" data-osave="${o.id}" data-co="${o.company_id}">Save</button> <button class="btn small ghost" data-ocancel>Cancel</button></td></tr>`
-      : `<tr data-q="${esc((coName[o.company_id] || '').toUpperCase())}"><td>${oFmt(o.ordered_at.slice(0, 10))} ${o.ordered_at.slice(11)}</td><td><b>${esc(coName[o.company_id])}</b></td><td class="rs"><b>${rupees(o.amount)}</b></td>
+      ? `<tr><td><input type="datetime-local" id="oe-at" value="${o.ordered_at}"></td><td><b>${esc(oName(o))}</b></td><td><input id="oe-amt" value="${o.amount}" inputmode="decimal" style="width:120px"></td><td>${o.company_id ? o.due_days + ' days' : `<input id="oe-days" type="number" min="0" value="${o.due_days}" style="width:70px">`}</td><td><input id="oe-note" value="${esc(o.note)}"></td><td></td>
+        <td><button class="btn small green" data-osave="${o.id}" data-co="${o.company_id || ''}" data-name="${esc(o.name)}">Save</button> <button class="btn small ghost" data-ocancel>Cancel</button></td></tr>`
+      : `<tr data-q="${esc((oName(o) || '').toUpperCase())}"><td>${oFmt(o.ordered_at.slice(0, 10))} ${o.ordered_at.slice(11)}</td><td><b>${esc(oName(o))}</b>${o.company_id ? '' : ' <span class="pill gray">manual</span>'}</td><td class="rs"><b>${rupees(o.amount)}</b></td>
         <td>${oFmt(oDue(o.ordered_at.slice(0, 10), o.due_days))} <small style="color:var(--muted)">(${o.due_days} d)</small></td><td><small>${esc(o.note)}</small></td><td><small>${esc(o.by_name || '')}</small></td>
         <td><button class="btn small ghost" data-oedit="${o.id}">Edit</button> <button class="btn small ghost del" data-odel="${o.id}">Delete</button></td></tr>`).join('')}</table></div></section>`;
   m.querySelectorAll('[data-oedit]').forEach((b) => b.onclick = () => { filters.oEdit = +b.dataset.oedit; loadTab(); });
   m.querySelectorAll('[data-ocancel]').forEach((b) => b.onclick = () => { filters.oEdit = null; loadTab(); });
-  m.querySelectorAll('[data-osave]').forEach((b) => b.onclick = () => act(b, async () => { await api('POST', '/api/orders', { id: b.dataset.osave, company_id: b.dataset.co, amount: $('#oe-amt').value.replace(/,/g, ''), ordered_at: $('#oe-at').value, note: $('#oe-note').value }); filters.oEdit = null; }, 'Saved'));
+  m.querySelectorAll('[data-osave]').forEach((b) => b.onclick = () => act(b, async () => { await api('POST', '/api/orders', { id: b.dataset.osave, company_id: b.dataset.co || null, name: b.dataset.name, due_days: $('#oe-days') ? Number($('#oe-days').value) : undefined, amount: $('#oe-amt').value.replace(/,/g, ''), ordered_at: $('#oe-at').value, note: $('#oe-note').value }); filters.oEdit = null; }, 'Saved'));
   m.querySelectorAll('[data-odel]').forEach((b) => b.onclick = () => confirm('Delete this order?') && act(b, () => api('POST', '/api/orders', { id: b.dataset.odel, remove: true }), 'Deleted'));
   const filt = () => { const v = $('#olq').value.trim().toUpperCase(); filters.olq = v; m.querySelectorAll('tr[data-q]').forEach((tr) => { tr.hidden = v && !tr.dataset.q.includes(v); }); };
   $('#olq').oninput = filt; filt();
