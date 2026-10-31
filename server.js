@@ -598,19 +598,28 @@ migrate('2026-10-31-rack-product', () => {
   db.exec('ALTER TABLE rack_sets ADD COLUMN product TEXT');
 });
 
+// Rack, Basement and Tube rack setting work like Syrup cases: product (optional) + rack no., Marg flash, verify (owner, 2026-10-31).
+// The rack numbers typed so far move into syrup_cases.
+migrate('2026-10-31-racks-like-syrup', () => {
+  db.exec(`INSERT INTO syrup_cases (entry_id, case_name, rack_no, at, by, verified_by, verified_at)
+      SELECT entry_id, COALESCE(product, ''), rack_no, at, by, verified_by, verified_at FROM rack_sets ORDER BY id;
+    DELETE FROM rack_sets;`);
+});
+
 // ---------- helpers ----------
 // Adds .cases (syrup case name + rack) to work rows of the Syrup cases task.
 function withCases(rows) {
   withRacks(rows);
-  const ids = rows.filter((r) => r.task_code === 'O').map((r) => r.id);
+  const ids = rows.filter((r) => CASE_TASKS.includes(r.task_code)).map((r) => r.id);
   if (!ids.length) return rows;
   const by = {};
   for (const c of db.prepare(`SELECT c.id, c.entry_id, c.case_name, c.rack_no, c.at, c.verified_at, v.name AS verified_by_name FROM syrup_cases c LEFT JOIN users v ON v.id = c.verified_by WHERE c.entry_id IN (${ids.map(() => '?').join(',')}) ORDER BY CAST(c.rack_no AS INTEGER), c.rack_no, c.id`).all(...ids)) (by[c.entry_id] ||= []).push(c);
-  for (const r of rows) if (r.task_code === 'O') r.cases = by[r.id] || [];
+  for (const r of rows) if (CASE_TASKS.includes(r.task_code)) r.cases = by[r.id] || [];
   return rows;
 }
 // Adds .racks (rack numbers, lowest first) to work rows of the Rack Setting task.
-const RACK_TASKS = ['D', 'L', 'Q']; // Basement Setting, Rack Setting, Tube rack setting
+const RACK_TASKS = []; // Rack numbers are now kept with syrup cases (CASE_TASKS)
+const CASE_TASKS = ['O', 'D', 'L', 'Q']; // Syrup cases, Basement Setting, Rack Setting, Tube rack setting
 const rackList = (entryId) => db.prepare('SELECT r.id, r.rack_no, r.product, r.verified_at, v.name AS verified_by_name FROM rack_sets r LEFT JOIN users v ON v.id = r.verified_by WHERE r.entry_id = ? ORDER BY CAST(r.rack_no AS INTEGER), r.rack_no').all(entryId);
 function withRacks(rows) {
   for (const r of rows) if (RACK_TASKS.includes(r.task_code)) r.racks = rackList(r.id);
@@ -706,8 +715,8 @@ function dailyReport(date) {
   }
   for (const p of Object.values(people)) { p.breakMin = Math.round(p.breakMin); p.transportMin = Math.round(p.transportMin); p.checked = Math.round(p.checked); }
   // Every syrup case and rack number entered that day, with who entered it.
-  const syrup = db.prepare(`SELECT c.case_name, c.rack_no, c.at, c.verified_at, v.name AS verified_by_name, c.marg_at, mg.name AS marg_by_name, x.name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id JOIN users x ON x.id = e.start_by LEFT JOIN users v ON v.id = c.verified_by LEFT JOIN users mg ON mg.id = c.marg_by
-    WHERE c.at >= ? AND c.at < ? ORDER BY x.name, CAST(c.rack_no AS INTEGER), c.rack_no`).all(from, to);
+  const syrup = db.prepare(`SELECT c.case_name, c.rack_no, c.at, e.task_code, c.verified_at, v.name AS verified_by_name, c.marg_at, mg.name AS marg_by_name, x.name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id JOIN users x ON x.id = e.start_by LEFT JOIN users v ON v.id = c.verified_by LEFT JOIN users mg ON mg.id = c.marg_by
+    WHERE c.at >= ? AND c.at < ? ORDER BY x.name, e.task_code, CAST(c.rack_no AS INTEGER), c.rack_no`).all(from, to);
   const racks = db.prepare(`SELECT x.name, e.task_code, r.rack_no, r.product, r.verified_at, v.name AS verified_by_name FROM rack_sets r JOIN entries e ON e.id = r.entry_id JOIN users x ON x.id = e.start_by LEFT JOIN users v ON v.id = r.verified_by
     WHERE r.at >= ? AND r.at < ? ORDER BY x.name, e.task_code, CAST(r.rack_no AS INTEGER), r.rack_no`).all(from, to);
   return { date, syrup, racks, totalPrep, totalChecked: inc.checked, people: Object.values(people).sort((a, b) => b.items - a.items || b.checked - a.checked || a.name.localeCompare(b.name)) };
@@ -1337,12 +1346,12 @@ const routes = {
   // Syrup cases: add or remove one case (name + rack no.) on a running Syrup cases task.
   'POST /api/syrup': async (req, res, u) => {
     const { entry_id, case_name, rack_no, remove } = await readBody(req);
-    const e = db.prepare("SELECT * FROM entries WHERE id = ? AND task_code = 'O' AND bill_id IS NULL").get(entry_id);
-    if (!e) fail(404, 'Syrup cases task not found');
+    const e = db.prepare("SELECT * FROM entries WHERE id = ? AND task_code IN ('O', 'D', 'L', 'Q') AND bill_id IS NULL").get(entry_id);
+    if (!e) fail(404, 'Task not found');
     if (e.start_by !== u.id && !u.is_admin && !u.is_manager && !u.can_proxy) fail(403, 'Only the person doing this task can add cases');
     if (remove) { db.prepare('DELETE FROM syrup_cases WHERE id = ? AND entry_id = ?').run(remove, e.id); return send(res, 200, { ok: true }); }
     const name = String(case_name || '').trim().toUpperCase().slice(0, 80), rack = String(rack_no || '').trim().toUpperCase().slice(0, 20);
-    if (!name) fail(400, 'Type the case name');
+    if (!name && e.task_code === 'O') fail(400, 'Type the case name'); // product name is optional for racks
     if (!rack) fail(400, 'Type the rack no.');
     db.prepare('INSERT INTO syrup_cases (entry_id, case_name, rack_no, at, by) VALUES (?, ?, ?, ?, ?)').run(e.id, name, rack, now(), u.entered_by || u.id);
     send(res, 200, { ok: true });
@@ -1408,13 +1417,13 @@ const routes = {
   // Marg updates: syrup cases (name + rack) waiting for the Computer team to change the rack in Marg, last 7 days.
   'GET /api/marg-pending': async (req, res, u) => {
     if (u.dept !== 'Computer' && !u.is_admin) fail(403, 'Not allowed');
-    send(res, 200, db.prepare(`SELECT c.id, c.case_name, c.rack_no, c.at, x.name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id JOIN users x ON x.id = e.start_by
-      WHERE c.marg_at IS NULL AND c.at >= ? ORDER BY c.id`).all(new Date(Date.now() - 7 * 86400e3).toISOString()));
+    send(res, 200, db.prepare(`SELECT c.id, c.case_name, c.rack_no, c.at, e.task_code, x.name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id JOIN users x ON x.id = e.start_by
+      WHERE c.marg_at IS NULL AND c.case_name <> '' AND c.at >= ? ORDER BY c.id`).all(new Date(Date.now() - 7 * 86400e3).toISOString()));
   },
   // Owners: syrup cases entered in Marg in the last 24 hours, and by whom.
   'GET /api/marg-done': async (req, res, u) => {
     if (!u.is_admin) fail(403, 'Owner only');
-    send(res, 200, db.prepare(`SELECT c.id, c.case_name, c.rack_no, c.at, c.marg_at, x.name, m.name AS marg_by_name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id
+    send(res, 200, db.prepare(`SELECT c.id, c.case_name, c.rack_no, c.at, c.marg_at, e.task_code, x.name, m.name AS marg_by_name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id
       JOIN users x ON x.id = e.start_by LEFT JOIN users m ON m.id = c.marg_by WHERE c.marg_at >= ? ORDER BY c.marg_at DESC`).all(new Date(Date.now() - 86400e3).toISOString()));
   },
   'POST /api/marg-done': async (req, res, u) => {
