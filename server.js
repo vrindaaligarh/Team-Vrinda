@@ -587,6 +587,12 @@ migrate('2026-10-31-opening-dues', () => {
   for (const [d, a] of [['2026-10-18', 1333000], ['2026-10-19', 373000], ['2026-10-20', 816000], ['2026-10-21', 236000], ['2026-10-22', 165452], ['2026-10-23', 1200000], ['2026-10-25', 4329000], ['2026-10-26', 2982000], ['2026-10-27', 2055663], ['2026-10-28', 1590000], ['2026-10-29', 157000], ['2026-10-30', 386670], ['2026-10-31', 160000], ['2026-11-01', 3353443], ['2026-11-02', 2222300], ['2026-11-03', 1521000], ['2026-11-04', 1767000], ['2026-11-06', 260000], ['2026-11-08', 2018000], ['2026-11-10', 2367627], ['2026-11-11', 3523000], ['2026-11-12', 1190450], ['2026-11-16', 2245000], ['2026-11-17', 188714], ['2026-11-18', 4425080]]) ins.run(a, d + 'T00:00', new Date().toISOString());
 });
 
+// RIYA may undo bill steps and delete bills in All Bills like the owner (owner, 2026-10-31).
+migrate('2026-10-31-riya-fix-bills', () => {
+  db.exec('ALTER TABLE users ADD COLUMN can_fix_bills INTEGER NOT NULL DEFAULT 0');
+  db.prepare("UPDATE users SET can_fix_bills = 1 WHERE username = 'riya'").run();
+});
+
 // ---------- helpers ----------
 // Adds .cases (syrup case name + rack) to work rows of the Syrup cases task.
 function withCases(rows) {
@@ -777,7 +783,7 @@ const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Digits only: below 15000 is a challan (7656 -> CA007656),
 // otherwise 5 digits: below 50000 an R bill (15345 -> R015345), 50000 and up a T bill (50810 -> T050810).
 const padBillNo = (no) => no.replace(/^\d{1,5}$/, (d) => (Number(d) < 1 ? d : Number(d) < 15000 ? 'CA' + d.padStart(6, '0') : d.length === 5 ? (Number(d) < 50000 ? 'R0' : 'T0') + d : d)).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
-const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_prep: !!u.can_prep, can_verify_items: !!u.can_verify_items, dept: u.dept || '', can_alldone: !!u.can_alldone, can_shop: !u.is_admin && !shopExcluded(u.name), verify_codes: (u.verify_codes || '').split(',').filter(Boolean), active: !!u.active });
+const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_prep: !!u.can_prep, can_verify_items: !!u.can_verify_items, can_fix_bills: !!u.can_fix_bills, dept: u.dept || '', can_alldone: !!u.can_alldone, can_shop: !u.is_admin && !shopExcluded(u.name), verify_codes: (u.verify_codes || '').split(',').filter(Boolean), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
 function billRows(where = '', params = []) {
@@ -1569,7 +1575,8 @@ const server = http.createServer(async (req, res) => {
         if (!u) fail(401, 'Please log in');
         const reviewPaths = ['/api/admin/bills', '/api/admin/work', '/api/admin/staff-status'];
         const canSee = (u.is_manager && reviewPaths.includes(url.pathname)) || (u.can_proxy && url.pathname === '/api/admin/bills');
-        if (url.pathname.startsWith('/api/admin/') && !u.is_admin && !(req.method === 'GET' && canSee)) fail(403, 'Owner only');
+        const fixBills = u.can_fix_bills && req.method === 'POST' && url.pathname === '/api/admin/reset-stage';
+        if (url.pathname.startsWith('/api/admin/') && !u.is_admin && !fixBills && !(req.method === 'GET' && canSee)) fail(403, 'Owner only');
       }
       // "Enter for staff": work buttons pressed on someone else's behalf.
       const forId = Number(req.headers['x-for-user'] || 0);

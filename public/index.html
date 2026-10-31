@@ -550,7 +550,7 @@ async function viewAll(m) {
         const detail = filters.open === b.id ? `<tr class="detail"><td colspan="${stages.length + 4}">
           Bill #${esc(b.bill_no)}${b.items ? ` (${b.items} items)` : ''} created ${fmtFull(b.created_at)} by ${esc(b.created_by_name)}. ${editBtn(b.id, b.bill_no, b.items).replace('>Edit<', '>Change bill no. / items<')} ${allDoneBtn(b)}${state.me.is_admin || state.me.is_manager ? `<br>Or ask the person to fix a wrong punch:
           <div class="row" style="margin-top:8px">${done.map((s) => { const e = b.stages[s.code]; return `<button class="btn ghost small" data-fix="${e.id}" data-who="${esc(e.start_by_name || e.end_by_name)}">Ask ${esc(e.start_by_name || e.end_by_name)} to fix ${s.code}</button>`; }).join('')}</div>` : ''}
-          ${state.me.is_admin ? `<p class="sub" style="margin:10px 0 0">Owner: undo a stage (this also clears the stages after it):</p>
+          ${state.me.is_admin || state.me.can_fix_bills ? `<p class="sub" style="margin:10px 0 0">Undo a stage (this also clears the stages after it):</p>
           <div class="row" style="margin-top:6px">${done.map((s) => `<button class="btn ghost small" data-reset="${s.code}" data-b="${b.id}">Undo ${s.code}${s === stages[0] ? ' (delete bill)' : ''}</button>`).join('')}</div>` : ''}</td></tr>` : '';
         return `<tr class="click" data-open="${b.id}"><td><b>#${esc(b.bill_no)}</b><small>${fmtDate(b.created_at)}</small></td><td>${b.items ?? ''}</td>${cells}<td>${last && last.end_at ? dur(b.created_at, last.end_at) : ''}</td><td>${status}</td></tr>${detail}`;
       }).join('') || `<tr><td colspan="${stages.length + 4}" class="empty">No bills for this day.</td></tr>`}
