@@ -504,6 +504,8 @@ function withRacks(rows) {
   for (const r of rows) if (RACK_TASKS.includes(r.task_code)) r.racks = rackList(r.id);
   return rows;
 }
+// Items taken off a prepper's day count for each checking point (owner, 2026-10-31: 5; the PDF said 10).
+const POINT_ITEMS = 5;
 // Incentive per IST day between from and to (see GET /api/incentive for the rules).
 function incentiveDays(from, to) {
   const [pr, ch] = [stages()[0].code, stages()[1].code];
@@ -538,7 +540,7 @@ function incentiveDays(from, to) {
     const preppers = Object.values(d.preppers).map((p) => {
       let minutes = 0;
       for (const b of p.batches) { const min = Math.max(1, (Date.parse(b.end_at) - Date.parse(b.start_at)) / 60000); minutes += min; for (const x of b.bills) x.speed = +(b.items / min).toFixed(2); }
-      const adjusted = p.items - 10 * p.points;
+      const adjusted = p.items - POINT_ITEMS * p.points;
       const dayReward = adjusted > 1100 ? 100 : adjusted > 700 ? 50 : 0;
       const speedBills = p.bills.filter((b) => b.items >= 50).map((b) => ({ bill_no: b.bill_no, items: b.items, speed: b.speed, reward: b.speed > 4.5 ? 20 : b.speed > 3.25 ? 10 : 0 }));
       const speedReward = speedBills.reduce((n, b) => n + b.reward, 0);
@@ -1067,7 +1069,7 @@ const routes = {
     send(res, 200, out);
   },
   // Daily incentive (owner's VMA Incentive Rules, 2026-10-30), worked out per IST day between from and to.
-  // Preppers: Preparing items that day minus 10 per checking point on their bills; over 700 = Rs 50, over 1100 = Rs 100.
+  // Preppers: Preparing items that day minus 5 per checking point on their bills (owner changed 10 to 5, 2026-10-31); over 700 = Rs 50, over 1100 = Rs 100.
   //   Speed bonus per bill of 50+ items: over 3.25 items/min = Rs 10, over 4.5 = Rs 20 (bills prepared together share the batch speed).
   // Checkers: share of the day's checked items (split in half when two check together); over 30% = Rs 100, over 45% = Rs 150.
   'GET /api/incentive': async (req, res, u, q) => {

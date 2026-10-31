@@ -1126,7 +1126,7 @@ async function viewIncentive(m) {
     body = `<div class="stats" style="margin-bottom:12px">${stat('₹' + total, 'Total incentive')}${stat(d.preppers.filter((p) => p.total).length + d.checkers.filter((c) => c.reward).length, 'Rewards earned')}${stat(d.preppers.reduce((n, p) => n + p.items, 0), 'Items prepared')}${stat(d.checked, 'Items checked')}</div>
       <section class="card"><h2>Preppers</h2>${d.preppers.length ? `<div class="scroll"><table><tr><th>Employee</th><th class="rs">Bills</th><th class="rs">Items</th><th class="rs">Points</th><th class="rs">Counted items</th><th class="rs">Items reward</th><th>Speed bonus (50+ item bills)</th><th class="rs">Total</th></tr>
       ${d.preppers.map((p) => `<tr><td><b>${esc(p.name)}</b></td><td class="rs">${p.bills}</td><td class="rs">${p.items}</td><td class="rs">${p.points ? `<span class="late">${p.points}</span>` : '0'}</td>
-        <td class="rs"><b>${p.adjusted}</b>${p.points ? ` <small class="sub">(−${p.points * 10})</small>` : ''}</td><td class="rs">${rs(p.dayReward)}</td>
+        <td class="rs"><b>${p.adjusted}</b>${p.points ? ` <small class="sub">(−${p.points * 5})</small>` : ''}</td><td class="rs">${rs(p.dayReward)}</td>
         <td style="white-space:normal;min-width:220px">${(() => { const won = p.speedBills.filter((b) => b.reward);
           if (!p.speedBills.length) return '<small class="sub">No 50+ item bills</small>';
           return `<b>${rs(p.speedReward)}</b> <small class="sub">${won.length} of ${p.speedBills.length} bills</small>${won.length ? `<br><small>${won.map((b) => `${esc(b.bill_no)} ${b.speed}/min ₹${b.reward}`).join(' · ')}</small>` : ''}`; })()}</td>
@@ -1153,7 +1153,7 @@ async function viewIncentive(m) {
         <td class="rs">${rs(d.preppers.reduce((n, p) => n + p.total, 0) + d.checkers.reduce((n, c) => n + c.reward, 0))}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No days yet.</td></tr>'}</table></div><p class="sub" style="margin:8px 0 0">Tap a day to open it.</p></section>`;
   }
   const rules = `<section class="card"><h2>Rules</h2><p class="sub" style="margin:0">
-    <b>Preppers:</b> more than 700 items in a day ₹50, more than 1100 ₹100 (the higher one replaces the lower). Each checking point cuts 10 items (720 items with 2 points counts as 700, so no reward).
+    <b>Preppers:</b> more than 700 items in a day ₹50, more than 1100 ₹100 (the higher one replaces the lower). Each checking point cuts 5 items (705 items with 3 points counts as 690, so no reward).
     Speed above 3.25 items/min ₹10 per bill, above 4.5 ₹20 per bill, only on bills of 50 or more items; bills prepared at the same time share their batch speed.<br>
     <b>Checkers:</b> more than 30% of the day's checked items ₹100, more than 45% ₹150 (the higher one replaces the lower).<br>
     Days run midnight to midnight by the Preparing or Checking start time. "All done" steps are not counted.</p></section>`;
