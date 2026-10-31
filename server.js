@@ -593,6 +593,11 @@ migrate('2026-10-31-riya-fix-bills', () => {
   db.prepare("UPDATE users SET can_fix_bills = 1 WHERE username = 'riya'").run();
 });
 
+// Rack, Basement and Tube rack setting: an optional product name next to each rack no. (owner, 2026-10-31).
+migrate('2026-10-31-rack-product', () => {
+  db.exec('ALTER TABLE rack_sets ADD COLUMN product TEXT');
+});
+
 // ---------- helpers ----------
 // Adds .cases (syrup case name + rack) to work rows of the Syrup cases task.
 function withCases(rows) {
@@ -605,8 +610,8 @@ function withCases(rows) {
   return rows;
 }
 // Adds .racks (rack numbers, lowest first) to work rows of the Rack Setting task.
-const RACK_TASKS = ['L', 'Q']; // Rack Setting, Tube rack setting
-const rackList = (entryId) => db.prepare('SELECT r.id, r.rack_no, r.verified_at, v.name AS verified_by_name FROM rack_sets r LEFT JOIN users v ON v.id = r.verified_by WHERE r.entry_id = ? ORDER BY CAST(r.rack_no AS INTEGER), r.rack_no').all(entryId);
+const RACK_TASKS = ['D', 'L', 'Q']; // Basement Setting, Rack Setting, Tube rack setting
+const rackList = (entryId) => db.prepare('SELECT r.id, r.rack_no, r.product, r.verified_at, v.name AS verified_by_name FROM rack_sets r LEFT JOIN users v ON v.id = r.verified_by WHERE r.entry_id = ? ORDER BY CAST(r.rack_no AS INTEGER), r.rack_no').all(entryId);
 function withRacks(rows) {
   for (const r of rows) if (RACK_TASKS.includes(r.task_code)) r.racks = rackList(r.id);
   return rows;
@@ -703,7 +708,7 @@ function dailyReport(date) {
   // Every syrup case and rack number entered that day, with who entered it.
   const syrup = db.prepare(`SELECT c.case_name, c.rack_no, c.at, c.verified_at, v.name AS verified_by_name, c.marg_at, mg.name AS marg_by_name, x.name FROM syrup_cases c JOIN entries e ON e.id = c.entry_id JOIN users x ON x.id = e.start_by LEFT JOIN users v ON v.id = c.verified_by LEFT JOIN users mg ON mg.id = c.marg_by
     WHERE c.at >= ? AND c.at < ? ORDER BY x.name, CAST(c.rack_no AS INTEGER), c.rack_no`).all(from, to);
-  const racks = db.prepare(`SELECT x.name, e.task_code, r.rack_no, r.verified_at, v.name AS verified_by_name FROM rack_sets r JOIN entries e ON e.id = r.entry_id JOIN users x ON x.id = e.start_by LEFT JOIN users v ON v.id = r.verified_by
+  const racks = db.prepare(`SELECT x.name, e.task_code, r.rack_no, r.product, r.verified_at, v.name AS verified_by_name FROM rack_sets r JOIN entries e ON e.id = r.entry_id JOIN users x ON x.id = e.start_by LEFT JOIN users v ON v.id = r.verified_by
     WHERE r.at >= ? AND r.at < ? ORDER BY x.name, e.task_code, CAST(r.rack_no AS INTEGER), r.rack_no`).all(from, to);
   return { date, syrup, racks, totalPrep, totalChecked: inc.checked, people: Object.values(people).sort((a, b) => b.items - a.items || b.checked - a.checked || a.name.localeCompare(b.name)) };
 }
@@ -1344,15 +1349,20 @@ const routes = {
   },
   // Rack Setting: add rack numbers (one or many: "1, 5, 615") or remove one; returns the task's whole list.
   'POST /api/racks': async (req, res, u) => {
-    const { entry_id, racks, remove } = await readBody(req);
-    const e = db.prepare(`SELECT * FROM entries WHERE id = ? AND task_code IN ('L', 'Q') AND bill_id IS NULL`).get(entry_id);
+    const { entry_id, racks, remove, product } = await readBody(req);
+    const e = db.prepare(`SELECT * FROM entries WHERE id = ? AND task_code IN ('D', 'L', 'Q') AND bill_id IS NULL`).get(entry_id);
     if (!e) fail(404, 'Rack task not found');
     if (e.start_by !== u.id && !u.is_admin && !u.is_manager && !u.can_proxy) fail(403, 'Only the person doing this task can add racks');
     if (remove) db.prepare('DELETE FROM rack_sets WHERE id = ? AND entry_id = ?').run(remove, e.id);
     const have = new Set(rackList(e.id).map((r) => r.rack_no));
     const add = String(racks || '').toUpperCase().split(/[\s,;/]+/).map((x) => x.trim().slice(0, 20)).filter(Boolean);
-    const dup = add.filter((x) => have.has(x));
-    for (const x of add) if (!have.has(x)) { db.prepare('INSERT INTO rack_sets (entry_id, rack_no, at, by) VALUES (?, ?, ?, ?)').run(e.id, x, now(), u.entered_by || u.id); have.add(x); }
+    // Product name is optional; it goes with the rack no. typed with it (or every one, if several were typed together).
+    const prod = String(product || '').trim().toUpperCase().slice(0, 60) || null;
+    const dup = prod ? [] : add.filter((x) => have.has(x));
+    for (const x of add) {
+      if (!have.has(x)) { db.prepare('INSERT INTO rack_sets (entry_id, rack_no, product, at, by) VALUES (?, ?, ?, ?, ?)').run(e.id, x, prod, now(), u.entered_by || u.id); have.add(x); }
+      else if (prod) db.prepare('UPDATE rack_sets SET product = ? WHERE entry_id = ? AND rack_no = ?').run(prod, e.id, x);
+    }
     send(res, 200, { racks: rackList(e.id), dup });
   },
   'POST /api/work': async (req, res, u) => {
@@ -1419,7 +1429,7 @@ const routes = {
     if (!canReview(u) && !u.can_verify_items) fail(403, 'Not allowed');
     const jobs = db.prepare(`SELECT e.id, e.task_code, e.start_at, e.end_at, e.verified_at, t.name AS task_name, su.name AS start_by_name, vu.name AS verified_by_name FROM entries e
       JOIN tasks t ON t.code = e.task_code LEFT JOIN users su ON su.id = e.start_by LEFT JOIN users vu ON vu.id = e.verified_by
-      WHERE e.bill_id IS NULL AND e.task_code IN ('L', 'Q', 'O') AND e.start_at >= ? ORDER BY e.start_at DESC`).all(new Date(Date.now() - 3 * 86400e3).toISOString());
+      WHERE e.bill_id IS NULL AND e.task_code IN ('D', 'L', 'Q', 'O') AND e.start_at >= ? ORDER BY e.start_at DESC`).all(new Date(Date.now() - 3 * 86400e3).toISOString());
     withCases(jobs);
     send(res, 200, jobs.filter((j) => (j.racks || j.cases || []).length));
   },
