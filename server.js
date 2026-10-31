@@ -486,6 +486,101 @@ migrate('2026-10-31-marg-entered', () => {
   db.exec('ALTER TABLE syrup_cases ADD COLUMN marg_by INTEGER REFERENCES users(id); ALTER TABLE syrup_cases ADD COLUMN marg_at TEXT;');
 });
 
+// Orders section (owner and Ajanta): company master from the owner's orders.xlsx (2026-10-31): name, order frequency, payment due days.
+migrate('2026-10-31-orders', () => {
+  db.exec(`CREATE TABLE order_companies (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, category TEXT NOT NULL, due_days INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE orders (id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER NOT NULL REFERENCES order_companies(id), amount REAL NOT NULL,
+      ordered_at TEXT NOT NULL, due_days INTEGER NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, created_by INTEGER REFERENCES users(id));
+    CREATE INDEX orders_at ON orders(ordered_at);
+    CREATE TABLE order_periods (id INTEGER PRIMARY KEY AUTOINCREMENT, from_date TEXT NOT NULL, to_date TEXT NOT NULL, label TEXT NOT NULL, no_orders INTEGER NOT NULL DEFAULT 0);`);
+  const ins = db.prepare('INSERT OR IGNORE INTO order_companies (name, category, due_days) VALUES (?, ?, ?)');
+  for (const [n, c, d] of [
+    ["Ranbaxy Laboratores ltd", "auto", 18],
+    ["Sun Pharmaceuticals ltd (ADITYA)", "auto", 18],
+    ["Aristo Pharaceuticals pvt ltd", "weekly", 0],
+    ["Emcure (sanofi)", "weekly", 21],
+    ["Indian Immunological ltd (Abhayrab)", "weekly", 0],
+    ["Martin & Harries pvt ltd", "weekly", 0],
+    ["eugenics (procter)", "weekly", 7],
+    ["Mylan ( Pfizer)", "weekly", 21],
+    ["Sanofi india Ltd", "weekly", 1],
+    ["Sanofi Consumer Healthcare Ltd", "weekly", 1],
+    ["Sun ( volini/ revital)", "weekly", 0],
+    ["Universal Nutriscience Pvt Ltd", "weekly", 1],
+    ["Entero (rosche)", "weekly", 0],
+    ["SS International (rosche)", "weekly", 0],
+    ["Abbott India Ltd", "twice a week", 21],
+    ["Cipla ltd", "twice a week", 21],
+    ["Dr Reddy all divisions", "twice a week", 21],
+    ["Intas Pharmaceuticals ltd", "twice a week", 21],
+    ["Lupin ltd", "twice a week", 21],
+    ["Macleods Pharmacutical ltd", "twice a week", 21],
+    ["Mankind Pharma Ltd", "twice a week", 21],
+    ["Torrent Pharmaceuticals ltd", "twice a week", 21],
+    ["Zydus Healthcare ltd", "twice a week", 21],
+    ["Alembic Ltd", "weekly", 21],
+    ["Astra Zeneca", "weekly", 21],
+    ["Bayer Zydus Pharma", "weekly", 21],
+    ["Biocon Biologics", "weekly", 21],
+    ["Boehringer", "weekly", 21],
+    ["Corona Remedies ltd", "weekly", 21],
+    ["Eris Healthcare Pvt Ltd", "weekly", 21],
+    ["Fdc ltd", "weekly", 21],
+    ["Galderma", "weekly", 21],
+    ["GlaxoSmithkline pharmaceuticals ltd", "weekly", 11],
+    ["Glenmark Pharmaceuticals Ltd", "weekly", 21],
+    ["Integrace (rk medicines)", "weekly", 21],
+    ["Ipca Labs", "weekly", 21],
+    ["JB Chemicals & Pharma Ltd", "weekly", 21],
+    ["Medley", "weekly", 21],
+    ["Pfizer ltd", "weekly", 21],
+    ["Raptakoss Brett & Co. Ltd", "weekly", 21],
+    ["Usv Pvt Ltd", "weekly", 21],
+    ["AB ENTERPRISES (Pfizer/GSK/GSK CONSUMER/ABBOTT)", "weekly", 21],
+    ["Rpg Life Sciences", "weekly", 21],
+    ["Strassenberg Pharmaceuticals Ltd", "weekly", 21],
+    ["Fourts india ltd (FJ)", "weekly", 21],
+    ["Medsol india pvt ltd", "weekly", 30],
+    ["Entero (abbott healthcare 3 / serdica2)", "weekly", 21],
+    ["Overseas Healthcare pvt ltd", "weekly", 21],
+    ["Piramal Healthcare", "weekly", 21],
+    ["Seagull", "weekly", 21],
+    ["Servier (Serdia)", "weekly", 21],
+    ["Fusion Helthcare", "weekly", 21],
+    ["Stanwell Lifesciences (RENOGARD)", "weekly", 30],
+    ["Novartis pharma", "weekly", 21],
+    ["Synchem labs", "weekly", 21],
+    ["Tablet India Ltd", "weekly", 21],
+    ["Elan Pharmaceuticals", "weekly", 21],
+    ["Zorvia Healthcare Ltd", "weekly", 21],
+    ["Integram healthcare (MIRZA)", "biweekly", 35],
+    ["Medizine Cure", "biweekly", 35],
+    ["Rapross", "biweekly", 21],
+    ["Sinsan pharma (sarthak medico)", "biweekly", 21],
+    ["Tregenesis Sciences Pvt Ltd", "biweekly", 21],
+    ["Unimark Healthcare ltd", "biweekly", 21],
+    ["Mardis Laboratories Pvt Ltd", "biweekly", 30],
+    ["Nexacare", "biweekly", 30],
+    ["Samarth Life Sciences", "biweekly", 21],
+    ["Pmed Heatlhcare", "biweekly", 30],
+    ["Plasoroan Pvt Ltd (maahi distributors)", "biweekly", 21],
+    ["Satyam Opthalmics", "biweekly", 30],
+    ["Euglim (resource life sciences)", "once a month", 21],
+    ["Linux pharmaceuticals", "once a month", 21],
+    [".A.Menarini", "biweekly", 21],
+    ["Aarvi Healthcare", "once a month", 35],
+    ["Anexas", "once a month", 21],
+    ["Balaji Pharma (Synprovit)", "once a month", 35],
+    ["Dyota Numandis", "once a month", 21],
+    ["Gujarat Terce", "biweekly", 30],
+    ["Walron Healthcare Pvt Ltd (Kidosis)", "biweekly", 21],
+    ["Wockhardt", "once a month", 21],
+    ["Zwiebak pharmaceuticals pvt ltd", "once a month", 35],
+    ["Encube (soframycin)", "once a month", 0]
+  ]) ins.run(n, c, d);
+  db.prepare("INSERT INTO order_periods (from_date, to_date, label, no_orders) VALUES ('2026-11-05', '2026-11-10', 'Diwali week (low sales)', 0)").run();
+});
+
 // ---------- helpers ----------
 // Adds .cases (syrup case name + rack) to work rows of the Syrup cases task.
 function withCases(rows) {
@@ -852,6 +947,59 @@ const routes = {
       LEFT JOIN (SELECT party, area, SUM(amount) AS amount FROM debtor_rows WHERE date = ? GROUP BY party, area) p ON p.party = r.party AND p.area = r.area
       WHERE r.date = ? ORDER BY r.amount DESC LIMIT 100`).all(prev ? prev.date : '', date) : [];
     send(res, 200, { days, date, prev: prev ? prev.date : null, top });
+  },
+  // Orders (owner and Ajanta): companies, recent orders, festival / low-sales periods. Planning is worked out in the browser.
+  'GET /api/orders': async (req, res, u) => {
+    if (!u.is_admin) fail(403, 'Owner only');
+    const since = new Date(Date.now() + 330 * 60000 - 150 * 864e5).toISOString().slice(0, 10);
+    send(res, 200, {
+      today: istToday(),
+      companies: db.prepare('SELECT * FROM order_companies ORDER BY name COLLATE NOCASE').all(),
+      orders: db.prepare('SELECT o.*, x.name AS by_name FROM orders o LEFT JOIN users x ON x.id = o.created_by WHERE o.ordered_at >= ? ORDER BY o.ordered_at DESC, o.id DESC').all(since),
+      periods: db.prepare('SELECT * FROM order_periods ORDER BY from_date').all(),
+    }, { 'Cache-Control': 'no-store' });
+  },
+  // Add (no id), change (id) or delete (id + remove) an order. Due days are copied from the company when the order is saved.
+  'POST /api/orders': async (req, res, u) => {
+    if (!u.is_admin) fail(403, 'Owner only');
+    const b = await readBody(req);
+    if (b.remove) { db.prepare('DELETE FROM orders WHERE id = ?').run(Number(b.id)); return send(res, 200, { ok: true }); }
+    const c = db.prepare('SELECT * FROM order_companies WHERE id = ?').get(Number(b.company_id));
+    if (!c) fail(400, 'Pick a company from the list');
+    const amount = Number(b.amount);
+    if (!(amount > 0 && amount < 1e9)) fail(400, 'Enter the order amount');
+    const at = String(b.ordered_at || '');
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(at)) fail(400, 'Bad date and time');
+    const note = String(b.note || '').slice(0, 200);
+    if (b.id) {
+      const o = db.prepare('SELECT * FROM orders WHERE id = ?').get(Number(b.id));
+      if (!o) fail(404, 'Order not found');
+      db.prepare('UPDATE orders SET company_id = ?, amount = ?, ordered_at = ?, due_days = ?, note = ? WHERE id = ?')
+        .run(c.id, amount, at, o.company_id === c.id ? o.due_days : c.due_days, note, o.id);
+    } else db.prepare('INSERT INTO orders (company_id, amount, ordered_at, due_days, note, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)').run(c.id, amount, at, c.due_days, note, now(), u.id);
+    send(res, 200, { ok: true });
+  },
+  'POST /api/order-companies': async (req, res, u) => {
+    if (!u.is_admin) fail(403, 'Owner only');
+    const b = await readBody(req);
+    const name = String(b.name || '').trim().slice(0, 120), cat = String(b.category || '').trim().toLowerCase(), days = Number(b.due_days);
+    if (!name) fail(400, 'Enter the company name');
+    if (!['auto', 'weekly', 'twice a week', 'biweekly', 'once a month'].includes(cat)) fail(400, 'Bad category');
+    if (!(Number.isInteger(days) && days >= 0 && days <= 180)) fail(400, 'Due days must be 0 to 180');
+    const same = db.prepare('SELECT id FROM order_companies WHERE name = ? COLLATE NOCASE').get(name);
+    if (same && same.id !== Number(b.id || 0)) fail(400, 'This company is already in the list');
+    if (b.id) db.prepare('UPDATE order_companies SET name = ?, category = ?, due_days = ?, active = ? WHERE id = ?').run(name, cat, days, b.active === false ? 0 : 1, Number(b.id));
+    else db.prepare('INSERT INTO order_companies (name, category, due_days) VALUES (?, ?, ?)').run(name, cat, days);
+    send(res, 200, { ok: true });
+  },
+  'POST /api/order-periods': async (req, res, u) => {
+    if (!u.is_admin) fail(403, 'Owner only');
+    const b = await readBody(req);
+    if (b.remove) { db.prepare('DELETE FROM order_periods WHERE id = ?').run(Number(b.id)); return send(res, 200, { ok: true }); }
+    const ok = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
+    if (!ok(b.from_date) || !ok(b.to_date) || b.to_date < b.from_date) fail(400, 'Pick the from and to dates');
+    db.prepare('INSERT INTO order_periods (from_date, to_date, label, no_orders) VALUES (?, ?, ?, ?)').run(b.from_date, b.to_date, String(b.label || '').trim().slice(0, 80) || 'Low sales', b.no_orders ? 1 : 0);
+    send(res, 200, { ok: true });
   },
   // Attendance (owners and MANSI): every uploaded day, its revision, and the leave approvals.
   'GET /api/attendance': async (req, res, u) => {
