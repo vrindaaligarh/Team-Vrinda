@@ -383,6 +383,11 @@ migrate('2026-10-30-shop-open-close', () => {
   }
 });
 const SHOP_START = '2026-10-01';
+// Not part of shop opening/closing (owner, 2026-10-31): managers, the girls and the supply team. They get no push buttons,
+// cannot be entered as names, and are not counted for the Rs 500 penalty. (PRIYANSHI SHARMA is the same person as SIYA.)
+const SHOP_EXCLUDE = ['ARUN', 'VICKY', 'BHAKTI', 'DIYA', 'MANSI', 'NEHA', 'POOJA', 'RIYA', 'SHEBI', 'SIYA', 'SUMAN', 'PRIYANSHI', 'PRIYANSHI SHARMA',
+  'DORI', 'HIMANSHU', 'IRFAN', 'ROCKY', 'TALHA'];
+const shopExcluded = (name) => SHOP_EXCLUDE.includes(String(name || '').trim().replace(/\s+/g, ' ').toUpperCase());
 // Staff push "I opened / I closed the shop" from their own login (owner, 2026-10-31). At most 2 per phase per day.
 // A push only counts after the owner or MANSI presses Verify: the names are then saved in shop_open_close.
 migrate('2026-10-31-shop-punch', () => {
@@ -625,7 +630,7 @@ const BILL_NO = /^([TR]\d{6}|[A-Z]{2}\d{6})$/;
 // Staff may skip leading zeros: CA7536 -> CA007536, T50810 -> T050810. Digits only: below 15000 is a challan (7656 -> CA007656),
 // otherwise 5 digits: below 50000 an R bill (15345 -> R015345), 50000 and up a T bill (50810 -> T050810).
 const padBillNo = (no) => no.replace(/^\d{1,5}$/, (d) => (Number(d) < 1 ? d : Number(d) < 15000 ? 'CA' + d.padStart(6, '0') : d.length === 5 ? (Number(d) < 50000 ? 'R0' : 'T0') + d : d)).replace(/^([A-Z]{1,2})(\d{1,6})$/, (m, p, d) => p + d.padStart(6, '0'));
-const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_prep: !!u.can_prep, can_alldone: !!u.can_alldone, verify_codes: (u.verify_codes || '').split(',').filter(Boolean), active: !!u.active });
+const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, is_admin: !!u.is_admin, is_manager: !!u.is_manager, tasks: userTasks(u), blocked: (u.blocked || '').split(',').filter(Boolean), can_proxy: !!u.can_proxy, can_prep: !!u.can_prep, can_alldone: !!u.can_alldone, can_shop: !u.is_admin && !shopExcluded(u.name), verify_codes: (u.verify_codes || '').split(',').filter(Boolean), active: !!u.active });
 
 // Full status of bills: one row per bill with its stage entries attached.
 function billRows(where = '', params = []) {
@@ -866,7 +871,7 @@ const routes = {
     if (month ? !/^\d{4}-\d{2}$/.test(month) : !/^\d{4}-\d{2}-\d{2}$/.test(date)) fail(400, 'Choose a valid date or month');
     const rows = db.prepare(`SELECT s.date, s.data, s.revision, s.updated_at, x.name AS updated_by FROM shop_open_close s LEFT JOIN users x ON x.id = s.updated_by
       WHERE ${month ? 's.date LIKE ?' : 's.date = ?'} ORDER BY s.date`).all(month ? month + '-%' : date).map((r) => ({ ...r, data: JSON.parse(r.data) }));
-    const names = db.prepare('SELECT name FROM users WHERE active = 1 AND is_admin = 0 ORDER BY name').all().map((x) => x.name.toUpperCase());
+    const names = db.prepare('SELECT name FROM users WHERE active = 1 AND is_admin = 0 ORDER BY name').all().map((x) => x.name.toUpperCase()).filter((n) => !shopExcluded(n));
     const punches = month ? shopPunches('p.date LIKE ?', month + '-%') : shopPunches('p.date = ?', date);
     // Pushes not verified yet, any day (owners see every day; MANSI today only).
     const waiting = u.is_admin ? shopPunches('p.verified_at IS NULL') : shopPunches('p.verified_at IS NULL AND p.date = ?', today);
@@ -883,6 +888,8 @@ const routes = {
     const list = (Array.isArray(names) ? names : []).map((n) => String(n || '').trim().replace(/\s+/g, ' ').toUpperCase());
     if (list.length !== 2 || list.some((n) => !n || n.length > 60)) fail(400, 'Type both names');
     if (list[0] === list[1]) fail(400, 'Choose two different people');
+    const out = list.filter(shopExcluded);
+    if (out.length) fail(400, `${out.join(' and ')} ${out.length > 1 ? 'are' : 'is'} not part of shop opening and closing`);
     const old = db.prepare('SELECT * FROM shop_open_close WHERE date = ?').get(date);
     if ((old ? old.revision : 0) !== Number(revision)) fail(409, 'Someone saved this day just now. Press Refresh and save again.');
     saveShopPhase(date, phase, list, u);
@@ -900,6 +907,7 @@ const routes = {
   },
   'POST /api/shop-punch': async (req, res, u) => {
     if (u.is_admin) fail(403, 'Owners verify; staff press these buttons');
+    if (shopExcluded(u.name)) fail(403, 'You are not part of shop opening and closing');
     const { phase } = await readBody(req), today = istToday();
     if (!SHOP_PHASE[phase]) fail(400, 'Choose opening or closing');
     const row = db.prepare('SELECT data FROM shop_open_close WHERE date = ?').get(today), saved = row && JSON.parse(row.data)[phase];

@@ -245,7 +245,7 @@ function renderLogin() {
 
 // ---------- shell ----------
 // Top-level sections of the Vrinda Medical Agencies dashboard; Bill Tracker holds every tab below. More sections come later.
-const SECTIONS_ALL = [['bills', 'Bill Tracker'], ['debtors', 'Debtors', (me) => me.is_admin], ['attendance', 'Attendance', (me) => me.is_admin || me.username === 'mansi'], ['shop', 'Shop Open/Close']];
+const SECTIONS_ALL = [['bills', 'Bill Tracker'], ['debtors', 'Debtors', (me) => me.is_admin], ['attendance', 'Attendance', (me) => me.is_admin || me.username === 'mansi'], ['shop', 'Shop Open/Close', (me) => me.is_admin || me.username === 'mansi' || me.can_shop]];
 const sections = () => SECTIONS_ALL.filter(([, , ok]) => !ok || ok(state.me));
 function tabs() {
   if (state.section === 'debtors') return [['debtors', 'Debtors']];
@@ -1586,7 +1586,8 @@ async function viewAttendance(m) {
 // Each day two people open the shop and two close it. Rule (owner): each person on SHOP_LIST must appear at least 5 times
 // a month (openings + closings together); anyone below 5 has a ₹500 penalty for that month (at current counts until month end).
 // Owners see and correct any day from 1 Oct 2026; MANSI enters today only. Days 1-11 Oct came from the old Excel sheet.
-const SHOP_LIST = ['FARHAN', 'HAYYUL', 'MUKUL', 'SONU', 'ARUN', 'AFZAL', 'RIZWAN', 'YASH', 'ANAS', 'AZEEM', 'ABHAY', 'FARAZ', 'HAMZA', 'JUNAID', 'REHAN', 'SAFFAN', 'SAIF', 'SUFIYAN', 'ZUHAIB', 'VICKY'];
+// Managers (Arun, Vicky), the girls and the supply team are not part of it (owner, 2026-10-31).
+const SHOP_LIST = ['FARHAN', 'HAYYUL', 'MUKUL', 'SONU', 'AFZAL', 'RIZWAN', 'YASH', 'ANAS', 'AZEEM', 'ABHAY', 'FARAZ', 'HAMZA', 'JUNAID', 'REHAN', 'SAFFAN', 'SAIF', 'SUFIYAN', 'ZUHAIB'];
 const SHOP_MIN = 5, SHOP_FINE = 500;
 function shopCounts(rows) {
   const per = new Map(SHOP_LIST.map((n) => [n, { name: n, opened: 0, closed: 0, listed: true }]));
