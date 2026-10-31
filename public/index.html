@@ -991,12 +991,6 @@ async function viewOrders(m) {
         <label class="grow" style="min-width:140px"><small style="color:var(--muted)">Note (optional)</small><br><input id="onote" style="width:100%"></label>
         <button class="btn green">Save order</button></form>
       <p class="sub" id="oinfo" style="margin:8px 0 0"></p></section>
-    <section class="card"><div class="row"><h2 class="grow" style="margin:0">Money needed in the bank · next ${horizon} days</h2>
-      <div class="seg">${[15, 30, 45].map((n) => `<button data-odays="${n}" class="${n === horizon ? 'on' : ''}">${n} days</button>`).join('')}</div></div>
-      <p class="sub" style="margin:6px 0 10px"><b>Placed</b> = orders already given, due on that day. <b>Expected</b> = orders still to place on plan (company's usual amount, last 5 orders), due on that day. Weekends greyed. Tap a day for companies.</p>
-      <div class="scroll"><table><tr><th>Payment date</th><th class="rs">Placed</th><th class="rs">Expected</th><th class="rs">Total</th><th></th></tr>
-      ${P.days.map(dayRow).join('')}
-      <tr><td><b>Total</b></td><td class="rs"><b>${rupees(P.days.reduce((n, x) => n + sum(x.placed), 0))}</b></td><td class="rs"><b>${rupees(P.days.reduce((n, x) => n + sum(x.planned), 0))}</b></td><td class="rs"><b>${rupees(tot(horizon))}</b></td><td></td></tr></table></div></section>
     <section class="card"><div class="row" style="flex-wrap:wrap"><h2 class="grow" style="margin:0">Orders left to place</h2>
       <div class="seg">${[['all', 'All ' + plan.length], ['today', 'Order ' + odayLabel + ' ' + orderToday.length], ['left', 'Left this period ' + plan.filter((c) => c.left).length]].map(([k, l]) => `<button data-oshow="${k}" class="${show === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <p class="sub" style="margin:6px 0 10px">Next order = last order + the company's gap (twice a week 3 days, weekly 7, every 2 weeks 14, monthly 1 month), moved off Saturdays, Sundays and no-order days. "Order → pay on" shows when the payment would fall; ⚠ means it lands in a low-sales period, so order less.</p>
@@ -1004,6 +998,12 @@ async function viewOrders(m) {
       <div class="scroll"><table><tr><th>Company</th><th>This period</th><th>Last order</th><th>Next order</th><th class="rs">Usual amount</th><th>Order ${odayLabel} → pay on</th><th></th></tr>
       ${rows.map(coRow).join('') || '<tr><td colspan="7" class="empty">Nothing here.</td></tr>'}</table></div>
       ${P.cos.some((c) => !c.f.per) ? `<p class="sub" style="margin:8px 0 0"><b>Auto</b> (no plan): ${P.cos.filter((c) => !c.f.per).map((c) => esc(c.name) + (c.last ? ` (last ${oFmt(c.last.date)})` : '')).join(', ')}</p>` : ''}</section>
+    <section class="card"><div class="row"><h2 class="grow" style="margin:0">Money needed in the bank · next ${horizon} days</h2>
+      <div class="seg">${[15, 30, 45].map((n) => `<button data-odays="${n}" class="${n === horizon ? 'on' : ''}">${n} days</button>`).join('')}</div></div>
+      <p class="sub" style="margin:6px 0 10px"><b>Placed</b> = orders already given, due on that day. <b>Expected</b> = orders still to place on plan (company's usual amount, last 5 orders), due on that day. Weekends greyed. Tap a day for companies.</p>
+      <div class="scroll"><table><tr><th>Payment date</th><th class="rs">Placed</th><th class="rs">Expected</th><th class="rs">Total</th><th></th></tr>
+      ${P.days.map(dayRow).join('')}
+      <tr><td><b>Total</b></td><td class="rs"><b>${rupees(P.days.reduce((n, x) => n + sum(x.placed), 0))}</b></td><td class="rs"><b>${rupees(P.days.reduce((n, x) => n + sum(x.planned), 0))}</b></td><td class="rs"><b>${rupees(tot(horizon))}</b></td><td></td></tr></table></div></section>
     <section class="card"><h2>Festival / low-sales days</h2><p class="sub">Days when sales dip (like Diwali). Payments falling on these days are marked so you can order less before them. Tick <b>No orders</b> if the shop gives no orders on those days.</p>
       ${d.periods.map((p) => `<div class="bill"><div class="info" style="color:var(--text)"><b>${esc(p.label)}</b> · ${oFmt(p.from_date)} to ${oFmt(p.to_date)} ${p.no_orders ? '<span class="pill red">No orders</span>' : '<span class="pill purple">Low sales</span>'}</div><button class="btn ghost small del" data-operiod="${p.id}">Remove</button></div>`).join('') || '<p class="empty">None added.</p>'}
       <form id="opform" class="row" style="margin-top:10px"><input id="oplabel" placeholder="Name, e.g. Holi" style="width:160px"><input type="date" id="opfrom" value="${today}"> to <input type="date" id="opto" value="${today}">
