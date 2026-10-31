@@ -387,6 +387,17 @@ const SHOP_START = '2026-10-01';
 // cannot be entered as names, and are not counted for the Rs 500 penalty. (PRIYANSHI SHARMA is the same person as SIYA.)
 const SHOP_EXCLUDE = ['ARUN', 'VICKY', 'BHAKTI', 'DIYA', 'MANSI', 'NEHA', 'POOJA', 'RIYA', 'SHEBI', 'SIYA', 'SUMAN', 'PRIYANSHI', 'PRIYANSHI SHARMA',
   'DORI', 'HIMANSHU', 'IRFAN', 'ROCKY', 'TALHA'];
+// How many times this person opened or closed this month: saved names plus their own pushes still waiting for Verify.
+const SHOP_MIN = 5;
+function shopMonthCount(u, today) {
+  const me = String(u.name || '').trim().replace(/\s+/g, ' ').toUpperCase(), month = today.slice(0, 7);
+  let n = 0;
+  for (const r of db.prepare('SELECT data FROM shop_open_close WHERE date LIKE ?').all(month + '-%')) {
+    const d = JSON.parse(r.data);
+    for (const ph of ['opening', 'closing']) n += ((d[ph] || {}).names || []).filter((x) => x === me).length;
+  }
+  return n + db.prepare('SELECT COUNT(*) AS c FROM shop_punch WHERE user_id = ? AND date LIKE ? AND verified_at IS NULL').get(u.id, month + '-%').c;
+}
 const shopExcluded = (name) => SHOP_EXCLUDE.includes(String(name || '').trim().replace(/\s+/g, ' ').toUpperCase());
 // Staff push "I opened / I closed the shop" from their own login (owner, 2026-10-31). At most 2 per phase per day.
 // A push only counts after the owner or MANSI presses Verify: the names are then saved in shop_open_close.
@@ -915,7 +926,7 @@ const routes = {
   // Staff: "I opened the shop" / "I closed the shop" for today. Only 2 people per phase; after that, or once verified, it is done for the day.
   'GET /api/shop-punch': async (req, res, u) => {
     const today = istToday(), row = db.prepare('SELECT data FROM shop_open_close WHERE date = ?').get(today), data = row ? JSON.parse(row.data) : {};
-    const out = { today };
+    const out = { today, myCount: shopMonthCount(u, today), min: SHOP_MIN };
     for (const ph of Object.keys(SHOP_PHASE)) {
       const list = shopPunches('p.date = ? AND p.phase = ?', today, ph);
       out[ph] = { punches: list.map((p) => ({ name: p.name, at: p.at, mine: p.user_id === u.id, verified: !!p.verified_at })), saved: data[ph] ? data[ph].names : null };

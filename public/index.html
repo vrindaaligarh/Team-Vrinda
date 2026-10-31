@@ -1650,6 +1650,7 @@ async function viewShopPush(m) {
         : `<button class="qk-go" style="width:100%;margin-top:10px;${ph === 'closing' ? 'background:var(--primary)' : ''}" data-push="${ph}">${icon} ${btn}</button>`}</section>`; };
   m.innerHTML = `<section class="card"><h2>Today · ${esc(attFmt(d.today))}</h2>
     <p class="sub">Press the button when <b>you</b> open or close the shop. Only 2 people can open and 2 can close each day. It counts after Mansi or the owner verifies.</p>
+    <div class="${d.myCount >= d.min ? 'qk-done' : 'card'}" style="margin:0 0 12px;font-size:17px;text-align:center">Your count this month: <b>${d.myCount}</b> of ${d.min}${d.myCount >= d.min ? ' ✓ minimum done' : ` · ${d.min - d.myCount} more needed`}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px">${card('opening', 'Shop opening', 'I opened the shop', '🔓')}${card('closing', 'Shop closing', 'I closed the shop', '🔒')}</div></section>`;
   m.querySelectorAll('[data-push]').forEach((b) => b.onclick = () => {
     if (!confirm(b.dataset.push === 'opening' ? 'Did you open the shop today?' : 'Did you close the shop today?')) return;
