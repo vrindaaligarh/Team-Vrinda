@@ -1024,9 +1024,9 @@ async function viewOrders(m) {
       const n = $('#odays').value, day = at.slice(0, 10), due = typed && n !== '' && day ? oDue(day, Number(n)) : '';
       return ($('#oinfo').innerHTML = typed ? `<b>Manual order</b>: not in your company list. Type the due days; it is counted in the money needed per day.${due ? ` Payment due on <b>${oFmt(due, { weekday: 'long', day: 'numeric', month: 'long' })}</b>` : ''}` : '');
     }
-    const day = at.slice(0, 10), due = day ? oDue(day, c.due_days) : '', ps = due ? P.periodsOn(due) : [], we = day && (oDow(day) === 0 || oDow(day) === 6);
+    const day = at.slice(0, 10), due = day ? oDue(day, c.due_days) : '', ps = due ? P.periodsOn(due) : [];
     const pc = P.cos.find((x) => x.id === c.id);
-    $('#oinfo').innerHTML = `${esc(FREQ[c.category] ? FREQ[c.category].label : c.category)} · ${c.due_days} days credit${due ? ` → payment due on <b>${oFmt(due, { weekday: 'long', day: 'numeric', month: 'long' })}</b>` : ''}${ps.length ? ` <span class="pill purple">⚠ in ${esc(ps[0].label)}</span>` : ''}${we ? ' <span class="pill red">Weekend: no orders on Sat/Sun</span>' : ''}${pc && pc.avg ? ` · usual order ${rupees(pc.avg)}` : ''}${pc && pc.last ? ` · last ${oFmt(pc.last.date)}` : ''}`;
+    $('#oinfo').innerHTML = `${esc(FREQ[c.category] ? FREQ[c.category].label : c.category)} · ${c.due_days} days credit${due ? ` → payment due on <b>${oFmt(due, { weekday: 'long', day: 'numeric', month: 'long' })}</b>` : ''}${ps.length ? ` <span class="pill purple">⚠ in ${esc(ps[0].label)}</span>` : ''}${pc && pc.avg ? ` · usual order ${rupees(pc.avg)}` : ''}${pc && pc.last ? ` · last ${oFmt(pc.last.date)}` : ''}`;
   };
   $('#oco').oninput = info; $('#oat').oninput = info; $('#odays').oninput = info; info();
   if (filters.oPick) { $('#oamt').focus(); filters.oPick = null; }
@@ -1036,7 +1036,6 @@ async function viewOrders(m) {
     const name = $('#oco').value.trim();
     if (!c && !name) return toast('Type the company name', true);
     if (!c && $('#odays').value === '') return toast('Type the due days for this company', true);
-    if (at && [0, 6].includes(oDow(at.slice(0, 10))) && !confirm('This date is a ' + (oDow(at.slice(0, 10)) ? 'Saturday' : 'Sunday') + '. Save anyway?')) return;
     act(e.submitter, () => api('POST', '/api/orders', { company_id: c ? c.id : null, name, due_days: c ? undefined : Number($('#odays').value), amount: $('#oamt').value.replace(/,/g, ''), ordered_at: at, note: $('#onote').value }), 'Order saved');
   };
   $('#oback').onclick = () => { filters.oBack = back ? 0 : 15; loadTab(); };
